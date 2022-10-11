@@ -12,5 +12,4 @@ Dependencies (non-exhaustive):
   - opacus
   - timm
   - tqdm
-  - ema-pytorch
   - wandb
