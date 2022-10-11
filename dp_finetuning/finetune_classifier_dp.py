@@ -89,10 +89,16 @@ def main():
 
     if not os.path.exists(dataset_path):
         raise Exception('We cannot download a dataset/model here \n Run python utils.py to download things')
-    ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
-    images_train, labels_train = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
-    ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
-    images_test, labels_test = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
+    if args.dataset == "SVHN":
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='train')
+        images_train, labels_train = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='test')
+        images_test, labels_test = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
+    else:
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
+        images_train, labels_train = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
+        images_test, labels_test = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
     len_test = labels_test.shape[0]
 
     if not os.path.exists(extracted_path):
