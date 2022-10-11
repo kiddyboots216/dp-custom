@@ -11,7 +11,6 @@ import torch.nn.functional as F
 from opacus import PrivacyEngine
 from torchvision import datasets, transforms
 from torch.utils.data import TensorDataset, DataLoader
-from ema_pytorch import EMA
 from tqdm import tqdm
 
 from utils import parse_args, dataset_with_indices, extract_features
@@ -19,7 +18,7 @@ from utils import parse_args, dataset_with_indices, extract_features
 global args
 global len_test
 ### UTILS
-def train(args, model, device, train_loader, optimizer, privacy_engine, epoch, ema=None):
+def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
     model.train()
     criterion = nn.CrossEntropyLoss()
     losses = []
@@ -32,8 +31,6 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch, e
         violations = privacy_engine.accountant.get_violations(indices)
         real_step = optimizer.step(violations)
         privacy_engine.accountant.compute_norms(indices)
-        if ema:
-            ema.update() # update our EMA
         privacy_engine.accountant.step()
         print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
         losses.append(loss.item())
@@ -133,12 +130,14 @@ def main():
 
     ### MAKE SOME AVERAGING UTILITES
 
-    ema = EMA(model, 
-                beta = 0.9999,
-                update_after_step = 0,
-                update_every = 1)
+    # ema = EMA(model, 
+    #             beta = 0.9999,
+    #             update_after_step = 0,
+    #             update_every = 1)
     from torch.optim.swa_utils import AveragedModel
     swa_model = AveragedModel(model)
+    ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
+    ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
 
     ### WANDB - COMMENT OUT IF YOU DON'T WANT TO USE WANDB
 
@@ -149,11 +148,13 @@ def main():
     ### DO TRAINING
     corrects = []
     for epoch in range(1, args.epochs + 1):
-        train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch, ema)
-        new_correct = test(model, args.device, test_loader, ema, swa_model)
+        train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
+        new_correct = test(model, args.device, test_loader, ema_model, swa_model)
         corrects.append(new_correct)
         wandb.log({"test_acc": new_correct})
-        if new_correct > 90:
+        # update ema / swa
+        ema_model.update_parameters(model)
+        if epoch > 10:
             swa_model.update_parameters(model)
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")
