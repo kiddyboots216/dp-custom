@@ -10,32 +10,27 @@ import torch.nn.functional as F
 from torchvision import datasets, transforms
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
-
+DATASET_TO_CLASSES = {
+            'CelebA': -1,
+            'CIFAR10': 10,
+            'CIFAR100': 100,
+            'EMNIST': 62,
+            'FashionMNIST': 10,
+            'MNIST': 10,
+            'STL10': 10,
+            'SVHN': 10}
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch DP Finetuning')
     parser.add_argument(
         '--dataset', 
-        default='cifar10', 
+        default='CIFAR10', 
         type=str,                
-        choices=[
-            'celeba',
-            'cifar10',
-            'cifar100',
-            'emnist',
-            'fashionmnist',
-            'mnist',
-            'stl10',
-            'svhn']
+        choices=list(DATASET_TO_CLASSES.keys())
     )
     parser.add_argument(
         '--arch', 
         default="beitv2_large_patch16_224_in22k", 
         type=str
-    )
-    parser.add_argument(
-        '--num-classes', 
-        default=10, 
-        type=int
     )
     parser.add_argument(
         '--lr', 
@@ -116,6 +111,7 @@ def parse_args():
         default=0,
     )
     args = parser.parse_args()
+    args.num_classes = DATASET_TO_CLASSES[args.dataset]
     for arg in vars(args):
         print(' {} {}'.format(arg, getattr(args, arg) or ''))
     return args
@@ -144,7 +140,8 @@ def get_features(f, images, batch=256):
 
 def download_things(args):
     dataset_path = args.dataset_path + args.dataset
-    ds = getattr(datasets, args.dataset.upper())(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
+
+    ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
 
 def extract_features(args, images_train, images_test):
@@ -158,9 +155,9 @@ def extract_features(args, images_train, images_test):
 
     ### GET PATH
     abbrev_arch = args.arch.split("_")[0]
-    extracted_path = args.dataset_path + "transfer/features/" + args.dataset + "_" + abbrev_arch
-    extracted_train_path = extracted_path + "_train.npy"
-    extracted_test_path = extracted_path + "_test.npy"
+    extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + abbrev_arch
+    extracted_train_path = extracted_path + "/_train.npy"
+    extracted_test_path = extracted_path + "/_test.npy"
 
     ### DO EXTRACTION
 

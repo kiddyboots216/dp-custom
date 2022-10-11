@@ -81,17 +81,17 @@ def main():
     torch.cuda.manual_seed(args.seed)
 
     ### EITHER FETCH EXTRACTED FEATURES OR EXTRACT FEATURES AND STORE THEM, THEN MAKE DATASET
-    dataset_path = args.dataset_path + args.dataset
+    dataset_path = args.dataset_path
     abbrev_arch = args.arch.split("_")[0]
-    extracted_path = args.dataset_path + "transfer/features/" + args.dataset + "_" + abbrev_arch
-    extracted_train_path = extracted_path + "_train.npy"
-    extracted_test_path = extracted_path + "_test.npy"
+    extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + abbrev_arch
+    extracted_train_path = extracted_path + "/_train.npy"
+    extracted_test_path = extracted_path + "/_test.npy"
 
     if not os.path.exists(dataset_path):
         raise Exception('We cannot download a dataset/model here \n Run python utils.py to download things')
-    ds = getattr(datasets, args.dataset.upper())(dataset_path, transform=transforms.ToTensor(), train=True)
+    ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
     images_train, labels_train = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
-    ds = getattr(datasets, args.dataset.upper())(dataset_path, transform=transforms.ToTensor(), train=False)
+    ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
     images_test, labels_test = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
     len_test = labels_test.shape[0]
 
