@@ -1,0 +1,161 @@
+/scratch/gpfs/ashwinee/dp-custom/dp_finetuning
+della-l01g3
+Mon Oct 10 23:16:51 EDT 2022
+starting job...
+ dataset cifar10
+ arch beitv2_large_patch16_224_in22k
+ num_classes 10
+ lr 1.0
+ epochs 10
+ batch_size 10000
+ sigma 10.0
+ max_per_sample_grad_norm 1
+ disable_dp 
+ secure_rng 
+ delta 1e-05
+ epsilon 1
+ seed 11297
+ num_runs 1
+ device cuda:0
+ dataset_path /scratch/gpfs/ashwinee/datasets/
+ augmult 
+/scratch/gpfs/ashwinee/envs/opacus/lib/python3.8/site-packages/opacus/privacy_engine.py:132: UserWarning: Secure RNG turned off. This is perfectly fine for experimentation as it allows for much faster training performance, but remember to turn it on and retrain one last time before production with ``secure_mode`` turned on.
+  warnings.warn(
+Making a SparsefluenceOptimizer
+AUGMULT 0
+wandb: Tracking run with wandb version 0.13.4
+wandb: W&B syncing is set to `offline` in this directory.  
+wandb: Run `wandb online` or set WANDB_MODE=online to enable cloud syncing.
+  0%|          | 0/5 [00:00<?, ?it/s]/scratch/gpfs/ashwinee/envs/opacus/lib/python3.8/site-packages/torch/nn/modules/module.py:1053: UserWarning: Using a non-full backward hook when the forward contains multiple autograd Nodes is deprecated and will be removed in future versions. This hook will be missing some grad_input. Please use register_full_backward_hook to get the documented behavior.
+  warnings.warn("Using a non-full backward hook when the forward contains multiple autograd Nodes "
+Privacy Usage 0.01
+ 20%|██        | 1/5 [00:02<00:09,  2.43s/it]Privacy Usage 0.01
+ 40%|████      | 2/5 [00:04<00:06,  2.05s/it]Privacy Usage 0.02
+ 60%|██████    | 3/5 [00:06<00:03,  1.96s/it]Privacy Usage 0.03
+ 80%|████████  | 4/5 [00:07<00:01,  1.89s/it]Privacy Usage 0.03
+100%|██████████| 5/5 [00:09<00:00,  1.87s/it]100%|██████████| 5/5 [00:09<00:00,  1.93s/it]
+Train Epoch: 1 	 Loss: 1.949749
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 16.94it/s]
+
+Test set: Average loss: 0.0001, Accuracy: 90.59%
+
+Test set (EMA): Average loss: 0.0002, Accuracy: 83.99%
+
+Test set (SWA): Average loss: 0.0002, Accuracy: 9.09%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.04
+ 20%|██        | 1/5 [00:01<00:07,  1.84s/it]Privacy Usage 0.05
+ 40%|████      | 2/5 [00:03<00:05,  1.81s/it]Privacy Usage 0.05
+ 60%|██████    | 3/5 [00:05<00:03,  1.79s/it]Privacy Usage 0.06
+ 80%|████████  | 4/5 [00:07<00:01,  1.81s/it]Privacy Usage 0.07
+100%|██████████| 5/5 [00:09<00:00,  1.80s/it]100%|██████████| 5/5 [00:09<00:00,  1.80s/it]
+Train Epoch: 2 	 Loss: 1.157782
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00,  9.64it/s]100%|██████████| 1/1 [00:00<00:00,  9.59it/s]
+
+Test set: Average loss: 0.0001, Accuracy: 96.49%
+
+Test set (EMA): Average loss: 0.0001, Accuracy: 94.73%
+
+Test set (SWA): Average loss: 0.0001, Accuracy: 90.59%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.07
+ 20%|██        | 1/5 [00:01<00:07,  1.79s/it]Privacy Usage 0.08
+ 40%|████      | 2/5 [00:03<00:05,  1.78s/it]Privacy Usage 0.09
+ 60%|██████    | 3/5 [00:05<00:03,  1.80s/it]Privacy Usage 0.09
+ 80%|████████  | 4/5 [00:07<00:01,  1.79s/it]Privacy Usage 0.10
+100%|██████████| 5/5 [00:08<00:00,  1.80s/it]100%|██████████| 5/5 [00:08<00:00,  1.80s/it]
+Train Epoch: 3 	 Loss: 0.673796
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17.47it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 97.46%
+
+Test set (EMA): Average loss: 0.0001, Accuracy: 96.85%
+
+Test set (SWA): Average loss: 0.0001, Accuracy: 95.11%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.11
+ 20%|██        | 1/5 [00:01<00:07,  1.77s/it]Privacy Usage 0.11
+ 40%|████      | 2/5 [00:03<00:05,  1.80s/it]Privacy Usage 0.12
+ 60%|██████    | 3/5 [00:05<00:03,  1.79s/it]Privacy Usage 0.13
+ 80%|████████  | 4/5 [00:07<00:01,  1.80s/it]Privacy Usage 0.14
+100%|██████████| 5/5 [00:08<00:00,  1.79s/it]100%|██████████| 5/5 [00:08<00:00,  1.79s/it]
+Train Epoch: 4 	 Loss: 0.403715
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00,  9.62it/s]100%|██████████| 1/1 [00:00<00:00,  9.57it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 98.05%
+
+Test set (EMA): Average loss: 0.0000, Accuracy: 97.66%
+
+Test set (SWA): Average loss: 0.0001, Accuracy: 96.50%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.14
+ 20%|██        | 1/5 [00:01<00:07,  1.77s/it]Privacy Usage 0.15
+ 40%|████      | 2/5 [00:03<00:05,  1.78s/it]Privacy Usage 0.16
+ 60%|██████    | 3/5 [00:05<00:03,  1.81s/it]Privacy Usage 0.16
+ 80%|████████  | 4/5 [00:07<00:01,  1.80s/it]Privacy Usage 0.17
+100%|██████████| 5/5 [00:09<00:00,  1.81s/it]100%|██████████| 5/5 [00:09<00:00,  1.80s/it]
+Train Epoch: 5 	 Loss: 0.257617
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17.49it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 98.39%
+
+Test set (EMA): Average loss: 0.0000, Accuracy: 98.11%
+
+Test set (SWA): Average loss: 0.0001, Accuracy: 97.23%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.18
+ 20%|██        | 1/5 [00:01<00:07,  1.78s/it]Privacy Usage 0.18
+ 40%|████      | 2/5 [00:03<00:05,  1.81s/it]Privacy Usage 0.19
+ 60%|██████    | 3/5 [00:05<00:03,  1.80s/it]Privacy Usage 0.20
+ 80%|████████  | 4/5 [00:07<00:01,  1.81s/it]Privacy Usage 0.20
+100%|██████████| 5/5 [00:08<00:00,  1.80s/it]100%|██████████| 5/5 [00:08<00:00,  1.80s/it]
+Train Epoch: 6 	 Loss: 0.177443
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17.46it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 98.32%
+
+Test set (EMA): Average loss: 0.0000, Accuracy: 98.32%
+
+Test set (SWA): Average loss: 0.0000, Accuracy: 97.89%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.21
+ 20%|██        | 1/5 [00:01<00:07,  1.82s/it]Privacy Usage 0.22
+ 40%|████      | 2/5 [00:03<00:05,  1.80s/it]Privacy Usage 0.22
+ 60%|██████    | 3/5 [00:05<00:03,  1.83s/it]Privacy Usage 0.23
+ 80%|████████  | 4/5 [00:07<00:01,  1.81s/it]Privacy Usage 0.24
+100%|██████████| 5/5 [00:09<00:00,  1.82s/it]100%|██████████| 5/5 [00:09<00:00,  1.82s/it]
+Train Epoch: 7 	 Loss: 0.132152
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17.40it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 98.34%
+
+Test set (EMA): Average loss: 0.0000, Accuracy: 98.38%
+
+Test set (SWA): Average loss: 0.0000, Accuracy: 98.14%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.24
+ 20%|██        | 1/5 [00:01<00:07,  1.79s/it]Privacy Usage 0.25
+ 40%|████      | 2/5 [00:03<00:05,  1.82s/it]Privacy Usage 0.26
+ 60%|██████    | 3/5 [00:05<00:03,  1.80s/it]Privacy Usage 0.26
+ 80%|████████  | 4/5 [00:07<00:01,  1.82s/it]Privacy Usage 0.27
+100%|██████████| 5/5 [00:09<00:00,  1.80s/it]100%|██████████| 5/5 [00:09<00:00,  1.81s/it]
+Train Epoch: 8 	 Loss: 0.109239
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17.47it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 98.38%
+
+Test set (EMA): Average loss: 0.0000, Accuracy: 98.36%
+
+Test set (SWA): Average loss: 0.0000, Accuracy: 98.19%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.28
+ 20%|██        | 1/5 [00:01<00:07,  1.83s/it]Privacy Usage 0.28
+ 40%|████      | 2/5 [00:03<00:05,  1.80s/it]Privacy Usage 0.29
+ 60%|██████    | 3/5 [00:05<00:03,  1.82s/it]Privacy Usage 0.30
+ 80%|████████  | 4/5 [00:07<00:01,  1.81s/it]Privacy Usage 0.30
+100%|██████████| 5/5 [00:09<00:00,  1.82s/it]100%|██████████| 5/5 [00:09<00:00,  1.82s/it]
+Train Epoch: 9 	 Loss: 0.093279
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17.34it/s]
+
+Test set: Average loss: 0.0000, Accuracy: 98.41%
+
+Test set (EMA): Average loss: 0.0000, Accuracy: 98.36%
+
+Test set (SWA): Average loss: 0.0000, Accuracy: 98.33%
+  0%|          | 0/5 [00:00<?, ?it/s]Privacy Usage 0.31
+ 20%|██        | 1/5 [00:01<00:07,  1.78s/it]Privacy Usage 0.32
+ 40%|████      | 2/5 [00:03<00:05,  1.80s/it]Privacy Usage 0.32
+ 60%|██████    | 3/5 [00:05<00:03,  1.80s/it]Privacy Usage 0.33
+ 80%|████████  | 4/5 [00:07<00:01,  1.81s/it]

@@ -1,0 +1,23 @@
+2022-10-10 22:51:46,893 INFO    MainThread:1273477 [wandb_setup.py:_flush():68] Configure stats pid to 1273477
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_setup.py:_flush():68] Loading settings from /home/ashwinee/.config/wandb/settings
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_setup.py:_flush():68] Loading settings from /scratch/gpfs/ashwinee/dp_finetuning/wandb/settings
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_setup.py:_flush():68] Loading settings from environment variables: {'mode': 'offline', '_require_service': 'True'}
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_setup.py:_flush():68] Inferring run settings from compute environment: {'program_relpath': 'finetune_classifier_dp.py', 'program': 'finetune_classifier_dp.py'}
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_init.py:_log_setup():476] Logging user logs to /scratch/gpfs/ashwinee/dp_finetuning/wandb/offline-run-20221010_225146-34sxiigc/logs/debug.log
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_init.py:_log_setup():477] Logging internal logs to /scratch/gpfs/ashwinee/dp_finetuning/wandb/offline-run-20221010_225146-34sxiigc/logs/debug-internal.log
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_init.py:init():516] calling init triggers
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_init.py:init():519] wandb.init called with sweep_config: {}
+config: {}
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_init.py:init():569] starting backend
+2022-10-10 22:51:46,894 INFO    MainThread:1273477 [wandb_init.py:init():573] setting up manager
+2022-10-10 22:51:46,898 INFO    MainThread:1273477 [backend.py:_multiprocessing_setup():102] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2022-10-10 22:51:46,901 INFO    MainThread:1273477 [wandb_init.py:init():580] backend started and connected
+2022-10-10 22:51:46,904 INFO    MainThread:1273477 [wandb_init.py:init():658] updated telemetry
+2022-10-10 22:51:46,904 INFO    MainThread:1273477 [wandb_init.py:init():728] starting run threads in backend
+2022-10-10 22:51:46,928 INFO    MainThread:1273477 [wandb_run.py:_console_start():1980] atexit reg
+2022-10-10 22:51:46,928 INFO    MainThread:1273477 [wandb_run.py:_redirect():1838] redirect: SettingsConsole.WRAP_RAW
+2022-10-10 22:51:46,928 INFO    MainThread:1273477 [wandb_run.py:_redirect():1903] Wrapping output streams.
+2022-10-10 22:51:46,928 INFO    MainThread:1273477 [wandb_run.py:_redirect():1925] Redirects installed.
+2022-10-10 22:51:46,928 INFO    MainThread:1273477 [wandb_init.py:init():765] run started, returning control to user process
+2022-10-10 22:51:46,930 INFO    MainThread:1273477 [wandb_run.py:_config_callback():1160] config_cb None None {'dataset': 'cifar10', 'arch': 'beitv2_large_patch16_224_in22k', 'num_classes': 10, 'lr': 1.0, 'epochs': 10, 'batch_size': 10000, 'sigma': 10.0, 'max_per_sample_grad_norm': 1, 'disable_dp': False, 'secure_rng': False, 'delta': 1e-05, 'epsilon': 1, 'seed': 11297, 'num_runs': 1, 'device': 'cuda:0', 'dataset_path': '/scratch/gpfs/ashwinee/datasets/', 'augmult': 0}
+2022-10-10 22:51:48,667 WARNING MsgRouterThr:1273477 [router.py:message_loop():77] message_loop has been closed
