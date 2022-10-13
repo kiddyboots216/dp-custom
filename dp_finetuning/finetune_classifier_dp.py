@@ -28,11 +28,16 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
         output = model(data)
         loss = criterion(output, target)
         loss.backward()
-        violations = privacy_engine.accountant.get_violations(indices)
-        real_step = optimizer.step(violations)
+        # get per sample norms
+        # step accountant
+        # update optimizer max grad norm with accountant max grad norm
+        # step optimizer
+        optimizer.compute_norms()
         privacy_engine.accountant.compute_norms(indices)
         privacy_engine.accountant.step()
-        print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
+        optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
+        optimizer.step()
+        # print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
         losses.append(loss.item())
 
     print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
@@ -89,11 +94,20 @@ def main():
 
     if not os.path.exists(dataset_path):
         raise Exception('We cannot download a dataset/model here \n Run python utils.py to download things')
-    if args.dataset == "SVHN":
+    if args.dataset in ["SVHN", "STL10"]:
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='train')
         images_train, labels_train = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='test')
         images_test, labels_test = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
+    elif "MNIST" in args.dataset:
+        if args.dataset == "EMNIST":
+            ds_train = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='byclass', train=True)
+            ds_test = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='byclass', train=False)
+        else:
+            ds_train = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
+            ds_test = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
+        images_train, labels_train = torch.tensor(ds_train.data.unsqueeze(1).repeat(1, 3, 1, 1)).float() / 255.0, torch.tensor(ds_train.targets)
+        images_test, labels_test = torch.tensor(ds_test.data.unsqueeze(1).repeat(1, 3, 1, 1)).float() / 255.0, torch.tensor(ds_test.targets)
     else:
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
         images_train, labels_train = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
@@ -109,13 +123,17 @@ def main():
     ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
     x_test = np.load(extracted_test_path)
     ds_test = dataset_with_indices(TensorDataset)(torch.from_numpy(x_test), labels_test)
-    train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(ds_train, batch_size=len(ds_train), shuffle=True)
     # from opacus.utils.batch_memory_manager import wrap_data_loader
-    test_loader = DataLoader(ds_test, batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
+    # train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True)
+    # # from opacus.utils.batch_memory_manager import wrap_data_loader
+    # test_loader = DataLoader(ds_test, batch_size=args.batch_size, shuffle=False)
 
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
     classifier = nn.Linear(features_train.shape[-1], args.num_classes, bias=False).cuda()
-    optimizer = torch.optim.SGD(classifier.parameters(), lr=args.lr, momentum=0)
+    # nn.init.normal_(classifier.weight, mean=0.0, std=1.0/np.sqrt(features_train.shape[-1]))
+    optimizer = torch.optim.SGD(classifier.parameters(), lr=args.lr, momentum=0.9)
     privacy_engine = None
 
     if not args.disable_dp:
@@ -144,23 +162,25 @@ def main():
     swa_model = AveragedModel(model)
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
     ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
+    sched = torch.optim.lr_scheduler.CyclicLR(optimizer, 0.1, args.lr, step_size_up=10)
 
     ### WANDB - COMMENT OUT IF YOU DON'T WANT TO USE WANDB
 
-    wandb.init(project="dp_finetune", 
-        entity="kiddyboots216")
+    wandb.init(project="baselines", 
+        entity="dp-finetuning")
     wandb.config.update(args)
 
     ### DO TRAINING
     corrects = []
     for epoch in range(1, args.epochs + 1):
+        sched.step()
         train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
         new_correct = test(model, args.device, test_loader, ema_model, swa_model)
         corrects.append(new_correct)
         wandb.log({"test_acc": new_correct})
         # update ema / swa
         ema_model.update_parameters(model)
-        if epoch > 10:
+        if new_correct > 90:
             swa_model.update_parameters(model)
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")

@@ -7,7 +7,7 @@
 #SBATCH --constraint=gpu80
 #SBATCH --gres=gpu:1
 #SBATCH -t 0-2:00 # time requested (D-HH:MM)
-#SBATCH -o ./Report/output.%a.out # STDOUT
+#SBATCH -o Report/%j.out # STDOUT
 
 # print some info for context
 pwd
@@ -39,7 +39,6 @@ python finetune_classifier_dp.py\
     --dataset ${1}\
     --lr ${2}\
     --max_per_sample_grad_norm ${3}\
-    --batch_size ${4}\
-    --epsilon ${5}\
-    --sigma ${6}\
-    --epochs ${7}\
+    --epsilon ${4}\
+    --sigma ${5}\
+    --epochs ${6}\
