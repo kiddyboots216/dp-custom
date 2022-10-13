@@ -32,10 +32,11 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
         # step accountant
         # update optimizer max grad norm with accountant max grad norm
         # step optimizer
-        optimizer.compute_norms()
-        privacy_engine.accountant.compute_norms(indices)
-        privacy_engine.accountant.step()
-        optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
+        if not args.disable_dp:
+            optimizer.compute_norms()
+            privacy_engine.accountant.compute_norms(indices)
+            privacy_engine.accountant.step()
+            optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
         optimizer.step()
         # print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
         losses.append(loss.item())
@@ -131,15 +132,15 @@ def main():
     # test_loader = DataLoader(ds_test, batch_size=args.batch_size, shuffle=False)
 
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
-    classifier = nn.Linear(features_train.shape[-1], args.num_classes, bias=False).cuda()
+    model = nn.Linear(features_train.shape[-1], args.num_classes, bias=False).cuda()
     # nn.init.normal_(classifier.weight, mean=0.0, std=1.0/np.sqrt(features_train.shape[-1]))
-    optimizer = torch.optim.SGD(classifier.parameters(), lr=args.lr, momentum=0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
     privacy_engine = None
 
     if not args.disable_dp:
         privacy_engine = PrivacyEngine(secure_mode=args.secure_rng)
         model, optimizer, train_loader = privacy_engine.make_private(
-            module=classifier,
+            module=model,
             optimizer=optimizer,
             data_loader=train_loader,
             noise_multiplier=args.sigma,
@@ -184,8 +185,11 @@ def main():
             swa_model.update_parameters(model)
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")
-    wandb.log({"best_acc": best_acc,
+    if not args.disable_dp:
+        wandb.log({"best_acc": best_acc,
                 "epsilon": args.epsilon * privacy_engine.accountant.privacy_usage.max()})
+    else:
+        wandb.log({"best_acc": best_acc})
 
 if __name__ == "__main__":
     main()
