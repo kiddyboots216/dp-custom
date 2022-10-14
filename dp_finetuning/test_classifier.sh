@@ -1,14 +1,5 @@
 #!/bin/bash
 
-#SBATCH -N 1 # number of nodes requested
-#SBATCH -n 1 # number of tasks (i.e. processes)
-#SBATCH --cpus-per-task=4 # number of cores per task
-#SBATCH --mem-per-cpu=4G         # memory per cpu-core (4G is default)
-#SBATCH --constraint=gpu80
-#SBATCH --gres=gpu:1
-#SBATCH -t 0-2:00 # time requested (D-HH:MM)
-#SBATCH -o Report/%j.out # STDOUT
-
 # print some info for context
 pwd
 hostname

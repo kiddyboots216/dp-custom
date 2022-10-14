@@ -33,11 +33,20 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
         # update optimizer max grad norm with accountant max grad norm
         # step optimizer
         if not args.disable_dp:
-            optimizer.compute_norms()
-            privacy_engine.accountant.compute_norms(indices)
-            privacy_engine.accountant.step()
-            optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
-        optimizer.step()
+            if len(train_loader) == 1:
+                optimizer.compute_norms(privacy_engine.accountant.get_violations(indices))
+                privacy_engine.accountant.compute_norms(indices)
+                privacy_engine.accountant.step()
+                optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
+                optimizer.step()
+            else:
+                optimizer.compute_norms(privacy_engine.accountant.get_violations(indices))
+                privacy_engine.accountant.compute_norms(indices)
+                real_step = optimizer.step()
+                if real_step:
+                    privacy_engine.accountant.step()
+        else:
+            optimizer.step()
         # print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
         losses.append(loss.item())
 
@@ -124,7 +133,9 @@ def main():
     ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
     x_test = np.load(extracted_test_path)
     ds_test = dataset_with_indices(TensorDataset)(torch.from_numpy(x_test), labels_test)
-    train_loader = DataLoader(ds_train, batch_size=len(ds_train), shuffle=True)
+    if args.batch_size == -1:
+        args.batch_size = len(ds_train)
+    train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True)
     # from opacus.utils.batch_memory_manager import wrap_data_loader
     test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
     # train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True)
@@ -163,7 +174,8 @@ def main():
     swa_model = AveragedModel(model)
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
     ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
-    sched = torch.optim.lr_scheduler.CyclicLR(optimizer, 0.1, args.lr, step_size_up=10)
+    # sched = torch.optim.lr_scheduler.CyclicLR(optimizer, 0.1, args.lr, step_size_up=10)
+    sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = args.lr, steps_per_epoch=len(train_loader), epochs=args.epochs)
 
     ### WANDB - COMMENT OUT IF YOU DON'T WANT TO USE WANDB
 
