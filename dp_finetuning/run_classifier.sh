@@ -43,4 +43,5 @@ python finetune_classifier_dp.py\
     --sigma ${5}\
     --epochs ${6}\
     --batch_size ${7}\
-    ${8}\
+    --augmult ${8}\
+    ${9}\

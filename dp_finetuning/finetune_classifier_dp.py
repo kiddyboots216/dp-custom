@@ -13,7 +13,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-from utils import parse_args, dataset_with_indices, extract_features
+from utils import parse_args, dataset_with_indices, extract_features, get_ds
 
 global args
 global len_test
@@ -96,54 +96,10 @@ def main():
     torch.cuda.manual_seed(args.seed)
 
     ### EITHER FETCH EXTRACTED FEATURES OR EXTRACT FEATURES AND STORE THEM, THEN MAKE DATASET
-    dataset_path = args.dataset_path
-    abbrev_arch = args.arch.split("_")[0]
-    extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + abbrev_arch
-    extracted_train_path = extracted_path + "/_train.npy"
-    extracted_test_path = extracted_path + "/_test.npy"
-
-    if not os.path.exists(dataset_path):
-        raise Exception('We cannot download a dataset/model here \n Run python utils.py to download things')
-    if args.dataset in ["SVHN", "STL10"]:
-        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='train')
-        images_train, labels_train = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
-        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='test')
-        images_test, labels_test = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
-    elif "MNIST" in args.dataset:
-        if args.dataset == "EMNIST":
-            ds_train = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='byclass', train=True)
-            ds_test = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='byclass', train=False)
-        else:
-            ds_train = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
-            ds_test = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
-        images_train, labels_train = torch.tensor(ds_train.data.unsqueeze(1).repeat(1, 3, 1, 1)).float() / 255.0, torch.tensor(ds_train.targets)
-        images_test, labels_test = torch.tensor(ds_test.data.unsqueeze(1).repeat(1, 3, 1, 1)).float() / 255.0, torch.tensor(ds_test.targets)
-    else:
-        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
-        images_train, labels_train = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
-        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
-        images_test, labels_test = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
-    len_test = labels_test.shape[0]
-
-    if not os.path.exists(extracted_path):
-        extract_features(args, images_train, images_test)
-
-    x_train = np.load(extracted_train_path)
-    features_train = torch.from_numpy(x_train)
-    ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
-    x_test = np.load(extracted_test_path)
-    ds_test = dataset_with_indices(TensorDataset)(torch.from_numpy(x_test), labels_test)
-    if args.batch_size == -1:
-        args.batch_size = len(ds_train)
-    train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True)
-    # from opacus.utils.batch_memory_manager import wrap_data_loader
-    test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
-    # train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True)
-    # # from opacus.utils.batch_memory_manager import wrap_data_loader
-    # test_loader = DataLoader(ds_test, batch_size=args.batch_size, shuffle=False)
+    train_loader, test_loader, num_features = get_ds(args)
 
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
-    model = nn.Linear(features_train.shape[-1], args.num_classes, bias=False).cuda()
+    model = nn.Linear(num_features, args.num_classes, bias=False).cuda()
     # nn.init.normal_(classifier.weight, mean=0.0, std=1.0/np.sqrt(features_train.shape[-1]))
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
     privacy_engine = None
