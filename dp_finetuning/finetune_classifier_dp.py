@@ -96,7 +96,7 @@ def main():
     torch.cuda.manual_seed(args.seed)
 
     ### EITHER FETCH EXTRACTED FEATURES OR EXTRACT FEATURES AND STORE THEM, THEN MAKE DATASET
-    train_loader, test_loader, num_features = get_ds(args)
+    train_loader, test_loader, num_features, len_test = get_ds(args)
 
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
     model = nn.Linear(num_features, args.num_classes, bias=False).cuda()

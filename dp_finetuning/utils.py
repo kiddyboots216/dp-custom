@@ -222,7 +222,7 @@ def get_ds(args):
     features_test = torch.from_numpy(x_test)
     ds_test = dataset_with_indices(TensorDataset)(features_test, labels_test)
     test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False, **kwargs)
-    return train_loader, test_loader, features_test.shape[-1]
+    return train_loader, test_loader, features_test.shape[-1], len(labels_test)
 
 from typing import Any, Callable, Optional, Tuple, Sequence
 

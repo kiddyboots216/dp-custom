@@ -6,7 +6,7 @@
 #SBATCH --mem-per-cpu=4G         # memory per cpu-core (4G is default)
 #SBATCH --constraint=gpu80
 #SBATCH --gres=gpu:1
-#SBATCH -t 0-2:00 # time requested (D-HH:MM)
+#SBATCH -t 1-23:00 # time requested (D-HH:MM)
 #SBATCH -o Report/%j.out # STDOUT
 
 # print some info for context
