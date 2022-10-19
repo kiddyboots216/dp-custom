@@ -76,13 +76,8 @@ def test(model, device, test_loader, ema_model, swa_model):
     print("\nTest set (EMA): Average loss: {:.4f}, Accuracy: {:.2f}%".format(test_loss_ema,correct_ema))
     print("\nTest set (SWA): Average loss: {:.4f}, Accuracy: {:.2f}%".format(test_loss_swa,correct_swa))
 
-    return max(correct, correct_ema)
+    return max(correct, correct_ema, correct_swa)
 
-# args = EasyDict({"dataset": "CIFAR10", "arch": "beitv2_large_patch16_224_in22k", 
-#                  "num_classes":10, "lr": 8.0, "epochs": 16, "batch_size": 50000,
-#                  "sigma": 50.0, "max_per_sample_grad_norm": 30, "delta": 1e-5,
-#                  "secure_rng": False, "num_runs": 1, "seed": 11297, 
-#                  "disable_dp": False, "device": "cuda:0", "epsilon": 0.1})
 def main():
     ### ARGS
     global args
@@ -100,7 +95,8 @@ def main():
 
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
     model = nn.Linear(num_features, args.num_classes, bias=False).cuda()
-    # nn.init.normal_(classifier.weight, mean=0.0, std=1.0/np.sqrt(features_train.shape[-1]))
+    if args.standardize_weights:
+        nn.init.normal_(model.weight, mean=0.0, std=1.0/np.sqrt(num_features))
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
     privacy_engine = None
 
@@ -122,10 +118,6 @@ def main():
 
     ### MAKE SOME AVERAGING UTILITES
 
-    # ema = EMA(model, 
-    #             beta = 0.9999,
-    #             update_after_step = 0,
-    #             update_every = 1)
     from torch.optim.swa_utils import AveragedModel
     swa_model = AveragedModel(model)
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
@@ -149,7 +141,7 @@ def main():
         wandb.log({"test_acc": new_correct})
         # update ema / swa
         ema_model.update_parameters(model)
-        if new_correct > 90:
+        if (len(corrects) > 10 and (abs(corrects[-1] - corrects[-2]) < 1)): # model is converging, let's start doing SWA
             swa_model.update_parameters(model)
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")

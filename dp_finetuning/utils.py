@@ -64,6 +64,12 @@ def parse_args():
         help="Disable privacy training and just train with vanilla SGD",
     )
     parser.add_argument(
+        "--standardize_weights",
+        action="store_true",
+        default=False,
+        help="Initialize weights to Normal(0, 1/sqrt(fan_in)) to make the initialization more Gaussian"
+    )
+    parser.add_argument(
         "--secure_rng",
         action="store_true",
         default=False,
@@ -135,11 +141,11 @@ def dataset_with_indices(cls):
         '__getitem__': __getitem__,
     })
 
-def get_features(f, images, batch=256):
+def get_features(f, images, interp_size=224, batch=256):
     features = []
     for img in tqdm(images.split(batch)):
         with torch.no_grad():
-            img = F.interpolate(img.cuda(), size=(224, 224), mode="bicubic") # up-res size hardcoded
+            img = F.interpolate(img.cuda(), size=(interp_size, interp_size), mode="bicubic") # up-res size hardcoded
             features.append(f(img).detach().cpu())
     return torch.cat(features)
 
@@ -159,7 +165,7 @@ def extract_features(args, images_train, images_test):
     dataset_path = args.dataset_path + args.dataset
 
     ### GET PATH
-    abbrev_arch = args.arch.split("_")[0]
+    abbrev_arch = args.arch
     extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + abbrev_arch
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
@@ -168,15 +174,25 @@ def extract_features(args, images_train, images_test):
 
     print("GENERATING AND SAVING EXTRACTED FEATURES AT ", extracted_train_path)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True)).eval().cuda()
-    features_train = get_features(feature_extractor, images_train)
-    features_test = get_features(feature_extractor, images_test)
+    from collections import defaultdict
+    ARCH_TO_INTERP_SIZE = defaultdict(lambda x: 224)
+    archs_to_interp_sizes = {
+        "beit_large_patch16_512": 512,
+        "convnext_xlarge_384_in22ft1k": 384,
+        "vit_large_patch16_384": 384,
+        "tf_efficientnet_l2_ns": 800,
+    }
+    ARCH_TO_INTERP_SIZE.update(archs_to_interp_sizes)
+    interp_size = ARCH_TO_INTERP_SIZE[args.arch]
+    features_train = get_features(feature_extractor, images_train, interp_size=interp_size)
+    features_test = get_features(feature_extractor, images_test, interp_size=interp_size)
     os.makedirs(extracted_path, exist_ok=True)
     np.save(extracted_train_path, features_train)
     np.save(extracted_test_path, features_test)
 
 def get_ds(args):
     dataset_path = args.dataset_path
-    abbrev_arch = args.arch.split("_")[0]
+    abbrev_arch = args.arch
     extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + abbrev_arch
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
@@ -399,15 +415,5 @@ class FinetuneAugmultDataset(torch.utils.data.Dataset):
         return len(self.targets)
 
 if __name__ == "__main__":
-    from easydict import EasyDict
     args = parse_args()
-    import pdb
-    import code
-
-    class MyPdb(pdb.Pdb):
-        def do_interact(self, arg):
-            code.interact("*interactive*", local=self.curframe_locals)
-
-    ds = get_ds(args)
-    train_dataloader = DataLoader(ds,collate_fn=my_collate_func, batch_size=12, shuffle=True)
-    data, label, indices = next(iter(train_dataloader))
+    download_things(args)
