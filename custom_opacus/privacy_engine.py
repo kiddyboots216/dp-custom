@@ -418,7 +418,8 @@ class PrivacyEngine:
                                                         optimizer=optimizer,
                                                         epsilon=epsilon,
                                                         delta=delta,
-                                                        sample_rate=sample_rate)
+                                                        sample_rate=sample_rate,
+                                                        l2_norm_budget=True)
         else:
             optimizer.attach_step_hook(
                 self.accountant.get_optimizer_hook_fn(sample_rate=sample_rate)
