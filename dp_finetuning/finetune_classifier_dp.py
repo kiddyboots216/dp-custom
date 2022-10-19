@@ -32,7 +32,9 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
         # step accountant
         # update optimizer max grad norm with accountant max grad norm
         # step optimizer
-        if not args.disable_dp:
+        if args.disable_dp or args.do_vanilla:
+            optimizer.step()
+        else:
             if len(train_loader) == 1:
                 optimizer.compute_norms(privacy_engine.accountant.get_violations(indices))
                 privacy_engine.accountant.compute_norms(indices)
@@ -45,8 +47,6 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
                 real_step = optimizer.step()
                 if real_step:
                     privacy_engine.accountant.step()
-        else:
-            optimizer.step()
         # print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
         losses.append(loss.item())
 
@@ -108,7 +108,7 @@ def main():
             data_loader=train_loader,
             noise_multiplier=args.sigma,
             max_grad_norm=args.max_per_sample_grad_norm,
-            clipping="budget",
+            clipping="flat" if args.do_vanilla else "budget",
             epsilon=args.epsilon,
             delta=args.delta,
             poisson_sampling=True,
@@ -145,11 +145,14 @@ def main():
             swa_model.update_parameters(model)
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")
-    if not args.disable_dp:
+    if args.disable_dp:
+        wandb.log({"best_acc": best_acc})
+    elif args.do_vanilla:
+        wandb.log({"best_acc": best_acc,
+                "epsilon": privacy_engine.accountant.get_epsilon(delta=1e-5)})
+    else:
         wandb.log({"best_acc": best_acc,
                 "epsilon": args.epsilon * privacy_engine.accountant.privacy_usage.max()})
-    else:
-        wandb.log({"best_acc": best_acc})
 
 if __name__ == "__main__":
     main()

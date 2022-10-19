@@ -121,6 +121,12 @@ def parse_args():
         type=int,
         default=4,
     )
+    parser.add_argument(
+        "--do_vanilla",
+        action="store_true",
+        default=False,
+        help="Do vanilla DPSGD instead of using the filter"
+    )
     args = parser.parse_args()
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
     for arg in vars(args):
