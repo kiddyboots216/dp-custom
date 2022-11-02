@@ -14,24 +14,33 @@
 # limitations under the License.
 import os
 import warnings
+from itertools import chain
 from typing import IO, Any, BinaryIO, Dict, List, Optional, Tuple, Union
 
 import torch
 from opacus.accountants import create_accountant
 from opacus.accountants.utils import get_noise_multiplier
+from opacus.accountants.influence_accountant import InfluenceBoundedRDPAccountant
 from opacus.data_loader import DPDataLoader, switch_generator
 from opacus.distributed import DifferentiallyPrivateDistributedDataParallel as DPDDP
-from opacus.grad_sample.grad_sample_module import GradSampleModule
+from opacus.grad_sample import (
+    AbstractGradSampleModule,
+    GradSampleModule,
+    get_gsm_class,
+    wrap_model,
+)
 from opacus.optimizers import DPOptimizer, get_optimizer_class
 from opacus.scheduler import _NoiseScheduler
+from opacus.utils.module_utils import trainable_parameters
 from opacus.validators.module_validator import ModuleValidator
 from torch import nn, optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from opacus.accountants.influence_accountant import InfluenceBoundedRDPAccountant
 
 def forbid_accumulation_hook(
-    module: GradSampleModule, _grad_input: torch.Tensor, _grad_output: torch.Tensor
+    module: AbstractGradSampleModule,
+    _grad_input: torch.Tensor,
+    _grad_output: torch.Tensor,
 ):
     """
     Model hook that detects repetitive forward/backward passes between optimizer steps.
@@ -58,7 +67,7 @@ def forbid_accumulation_hook(
     if not module.training:
         return
 
-    for p in module.parameters():
+    for _, p in trainable_parameters(module):
         if p.grad_sample is not None:
             if isinstance(p.grad_sample, torch.Tensor):
                 accumulated_iterations = 1
@@ -71,7 +80,6 @@ def forbid_accumulation_hook(
                     "You need to call optimizer.step() after every forward/backward pass "
                     "or consider using BatchMemoryManager"
                 )
-
 
 class PrivacyEngine:
     """
@@ -151,6 +159,7 @@ class PrivacyEngine:
         do_baseline: bool = True,
         n_stale: int = 0,
         augmult: int=0,
+        grad_sample_mode="hooks",
     ) -> DPOptimizer:
         if isinstance(optimizer, DPOptimizer):
             optimizer = optimizer.original_optimizer
@@ -219,28 +228,33 @@ class PrivacyEngine:
         *,
         batch_first: bool = True,
         loss_reduction: str = "mean",
-    ) -> GradSampleModule:
+        grad_sample_mode: str = "hooks",
+    ) -> AbstractGradSampleModule:
         # Ideally, validation should have been taken care of by calling
         # `get_compatible_module()`
         self.validate(module=module, optimizer=None, data_loader=None)
 
         # wrap
-        if isinstance(module, GradSampleModule):
+        if isinstance(module, AbstractGradSampleModule):
             if (
                 module.batch_first != batch_first
                 or module.loss_reduction != loss_reduction
+                or type(module) != get_gsm_class(grad_sample_mode)
             ):
                 raise ValueError(
                     f"Pre-existing GradSampleModule doesn't match new arguments."
-                    f"Got: module.batch_first: {module.batch_first}, module.loss_reduction: {module.loss_reduction}"
-                    f"Requested: batch_first:{batch_first}, loss_reduction: {loss_reduction}. "
+                    f"Got: module.batch_first: {module.batch_first}, module.loss_reduction: {module.loss_reduction}, type(module): {type(module)}"
+                    f"Requested: batch_first:{batch_first}, loss_reduction: {loss_reduction}, grad_sample_mode: {grad_sample_mode} "
                     f"Please pass vanilla nn.Module instead"
                 )
 
             return module
         else:
-            return GradSampleModule(
-                module, batch_first=batch_first, loss_reduction=loss_reduction, strict=False,
+            return wrap_model(
+                module,
+                grad_sample_mode=grad_sample_mode,
+                batch_first=batch_first,
+                loss_reduction=loss_reduction,
             )
 
     def is_compatible(
@@ -317,6 +331,7 @@ class PrivacyEngine:
         poisson_sampling: bool = True,
         clipping: str = "flat",
         noise_generator=None,
+        grad_sample_mode: str = "hooks",
         epsilon: float = 2.0,
         delta: float = 1e-5,
         augmult: int = 0,
@@ -380,10 +395,23 @@ class PrivacyEngine:
         if noise_generator and self.secure_mode:
             raise ValueError("Passing seed is prohibited in secure mode")
 
+        # compare module parameter with optimizer parameters
+        model_parameters = set(module.parameters())
+        for p in chain.from_iterable(
+            [param_group["params"] for param_group in optimizer.param_groups]
+        ):
+            if p not in model_parameters:
+                raise ValueError(
+                    "Module parameters are different than optimizer Parameters"
+                )
+
         distributed = isinstance(module, (DPDDP, DDP))
 
         module = self._prepare_model(
-            module, batch_first=batch_first, loss_reduction=loss_reduction
+            module,
+            batch_first=batch_first,
+            loss_reduction=loss_reduction,
+            grad_sample_mode=grad_sample_mode,
         )
         if poisson_sampling:
             module.register_backward_hook(forbid_accumulation_hook)
@@ -399,6 +427,7 @@ class PrivacyEngine:
         if distributed:
             world_size = torch.distributed.get_world_size()
             expected_batch_size /= world_size
+
         
         optimizer = self._prepare_optimizer(
             optimizer,
@@ -409,6 +438,7 @@ class PrivacyEngine:
             noise_generator=noise_generator,
             distributed=distributed,
             clipping=clipping,
+            grad_sample_mode=grad_sample_mode,
             augmult=augmult,
             # **kwargs
         )

@@ -16,7 +16,7 @@ from .ddp_perlayeroptimizer import DistributedPerLayerOptimizer
 from .ddpoptimizer import DistributedDPOptimizer
 from .optimizer import DPOptimizer
 from .perlayeroptimizer import DPPerLayerOptimizer
-from .topk_influence_optimizer import SparsefluenceOptimizer
+from .topk_influence_optimizer import SparsefluenceOptimizer, DistributedSparsefluenceOptimizer
 
 
 __all__ = [
@@ -39,8 +39,10 @@ def get_optimizer_class(clipping: str, distributed: bool):
         return DPPerLayerOptimizer
     elif clipping == "per_layer" and distributed is True:
         return DistributedPerLayerOptimizer
-    elif clipping == "budget":
+    elif clipping == "budget" and distributed is False:
         return SparsefluenceOptimizer
+    elif clipping == "budget" and distributed is True:
+        return DistributedSparsefluenceOptimizer
 
     raise ValueError(
         f"Unexpected optimizer parameters. Clipping: {clipping}, distributed: {distributed}"

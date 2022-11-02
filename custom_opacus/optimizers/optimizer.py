@@ -403,10 +403,10 @@ class DPOptimizer(Optimizer):
         #     self.linfty_norm = max(self.linfty_norm, g.max())
         # [[b, param_shape] for param in parameters]
         # MyPdb().set_trace()
-        for p in self.params:
-            p.grad_sample = p.grad_sample.view(p.grad_sample.shape[0]//16, 16, *(i for i in p.grad_sample.shape[1:])).sum(dim=1)
+        # for p in self.params:
+            # p.grad_sample = p.grad_sample.view(p.grad_sample.shape[0]//16, 16, *(i for i in p.grad_sample.shape[1:])).sum(dim=1)
         per_param_norms = [
-            g.view(len(g), -1).norm(2, dim=-1) for g in self.grad_samples
+            g.reshape(len(g), -1).norm(2, dim=-1) for g in self.grad_samples
         ]
         per_sample_norms = torch.stack(per_param_norms, dim=1).norm(2, dim=1)
         # print(self.max_grad_norm)

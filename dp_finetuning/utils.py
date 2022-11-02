@@ -10,6 +10,12 @@ import torch.nn.functional as F
 from torchvision import datasets, transforms
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
+import pdb
+import code
+
+class MyPdb(pdb.Pdb):
+    def do_interact(self, arg):
+        code.interact("*interactive*", local=self.curframe_locals)
 DATASET_TO_CLASSES = {
             'CelebA': -1,
             'CIFAR10': 10,
@@ -162,6 +168,7 @@ def download_things(args):
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
 
 def extract_features(args, images_train, images_test):
+
     ### SET SEEDS
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -228,18 +235,21 @@ def get_ds(args):
     kwargs = {'num_workers': args.workers, 'pin_memory': True}
     if not os.path.exists(extracted_path):
         extract_features(args, images_train, images_test)
-    if args.augmult > 0:
+    if args.augmult > -1:
         ds_train = make_finetune_augmult_dataset(args, images_train, labels_train)
+        # kwargs.update({'collate_fn': my_collate_func})
         if args.batch_size == -1:
             args.batch_size = len(ds_train)
-        train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, collate_fn=my_collate_func)
+            train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=False, collate_fn=my_collate_func)
     else:
         x_train = np.load(extracted_train_path)
         features_train = torch.from_numpy(x_train)
         ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
         if args.batch_size == -1:
             args.batch_size = len(ds_train)
-        train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, **kwargs)
+            train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=False, **kwargs)
+        else:
+            train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, **kwargs)
     x_test = np.load(extracted_test_path)
     features_test = torch.from_numpy(x_test)
     ds_test = dataset_with_indices(TensorDataset)(features_test, labels_test)
@@ -262,14 +272,19 @@ from torch.utils.data.dataloader import default_collate
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader 
 
+# def my_collate_func(batch):
+#     batch = default_collate(batch)
+#     # batch_size, num_aug, channels, height, width = batch[0].size()
+#     bsz, num_aug, num_features = batch[0].size()
+#     batch[0] = batch[0].view([bsz * num_aug, num_features])
+#     batch[1] = batch[1].view([bsz * num_aug])
+#     return batch
+
 def my_collate_func(batch):
     batch = default_collate(batch)
-    # import pdb; pdb.set_trace()
-    #assert(len(batch) == 2)
-    # batch_size, num_aug, channels, height, width = batch[0].size()
-    bsz, num_aug, num_features = batch[0].size()
-    batch[0] = batch[0].view([bsz * num_aug, num_features])
-    batch[1] = batch[1].view([bsz * num_aug])
+    batch_size, num_aug, channels, height, width = batch[0].size()
+    batch[0] = batch[0].view([batch_size * num_aug, channels, height, width])
+    batch[1] = batch[1].view([batch_size * num_aug])
     return batch
 
 class Augmult:
@@ -348,16 +363,17 @@ class Augmult:
 def make_finetune_augmult_dataset(args, images_train, labels_train):
     normalize = transforms.Normalize(mean=[x for x in [125.3, 123.0, 113.9]],
                                      std=[x for x in [63.0, 62.1, 66.7]])
-    transform_train = transforms.Compose([
-            normalize,
-            ])
+    # transform_train = transforms.Compose([
+            # normalize,
+            # ])
+    transform_train = None
     ds = FinetuneAugmultDataset(
         arch = args.arch,
         data = images_train,
         labels = labels_train,
         transform=transform_train,
         image_size=(3, 32, 32),
-        augmult=16,
+        augmult=args.augmult,
         random_flip=True,
         random_crop=True,
         crop_size=32,
@@ -397,14 +413,10 @@ class FinetuneAugmultDataset(torch.utils.data.Dataset):
         self.target_transform = target_transform
         self.train = train
         self.download = download
-        self.feature_extractor = nn.DataParallel(timm.create_model(arch, num_classes=0, pretrained=True)).eval().cuda()
+        # self.feature_extractor = nn.DataParallel(timm.create_model(arch, num_classes=0, pretrained=True)).eval().cuda()
 
     def __getitem__(self, index: int) -> Tuple[Any,Any,Any]:
         img, target = self.data[index], self.targets[index]
-
-        # doing this so that it is consistent with all other datasets
-        # to return a PIL Image
-        # img = Image.fromarray(img)
 
         if self.transform is not None:
             img = self.transform(img)
@@ -413,13 +425,17 @@ class FinetuneAugmultDataset(torch.utils.data.Dataset):
             target = self.target_transform(target)
             
         img, target = self.augmult_module.apply_augmult(img, target)
-        with torch.no_grad():
-            features = self.feature_extractor(F.interpolate(img.cuda(), size=(224, 224), mode="bicubic")).detach()
-        return features, target, index
+        # MyPdb().set_trace()
+        img = F.interpolate(img, size=(224, 224), mode="bicubic")
+        return img, target, index
+        # with torch.no_grad():
+            # features = self.feature_extractor(F.interpolate(img.cuda(), size=(224, 224), mode="bicubic")).detach()
+        # return features, target, index
 
     def __len__(self):
         return len(self.targets)
 
 if __name__ == "__main__":
     args = parse_args()
-    download_things(args)
+    ds = get_ds(args)
+    MyPdb().set_trace()
