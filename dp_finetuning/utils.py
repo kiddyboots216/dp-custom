@@ -162,7 +162,7 @@ def get_features(f, images, interp_size=224, batch=256):
     return torch.cat(features)
 
 def download_things(args):
-    dataset_path = args.dataset_path + args.dataset
+    dataset_path = args.dataset_path
 
     ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
@@ -188,7 +188,7 @@ def extract_features(args, images_train, images_test):
     print("GENERATING AND SAVING EXTRACTED FEATURES AT ", extracted_train_path)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True)).eval().cuda()
     from collections import defaultdict
-    ARCH_TO_INTERP_SIZE = defaultdict(lambda x: 224)
+    ARCH_TO_INTERP_SIZE = defaultdict(lambda: 224)
     archs_to_interp_sizes = {
         "beit_large_patch16_512": 512,
         "convnext_xlarge_384_in22ft1k": 384,
@@ -437,5 +437,5 @@ class FinetuneAugmultDataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     args = parse_args()
-    ds = get_ds(args)
-    MyPdb().set_trace()
+    download_things(args)
+    get_ds(args)

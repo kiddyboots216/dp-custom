@@ -4,8 +4,7 @@ import torch
 from torch.optim import Optimizer
 
 from opacus.optimizers import DPOptimizer
-from opacus.optimizers.optimizer import _generate_noise
-from opacus.optimizers.optimizer import _check_processed_flag, _get_flat_grad_sample, _mark_as_processed
+from opacus.optimizers.optimizer import _generate_noise, _check_processed_flag, _mark_as_processed
 
 from opacus.grad_sample.grad_sample_module import GradSampleModule
 
@@ -85,7 +84,7 @@ class SparsefluenceOptimizer(DPOptimizer):
         for idx, p in enumerate(self.params):
             _check_processed_flag(p.grad_sample)
 
-            grad_sample = _get_flat_grad_sample(p)
+            grad_sample = self._get_flat_grad_sample(p)
             # MyPdb().set_trace()
 
             grad_sample = torch.einsum("i, i...->i...", 1/(self.max_grad_norm[indices] + 1e-6), grad_sample)

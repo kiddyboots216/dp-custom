@@ -8,11 +8,9 @@ date
 echo starting job...
 
 # replace these as necessary
-LIB_PATH=/scratch/gpfs/$USER/dp-custom/custom_opacus
-CONDA_PATH=/scratch/gpfs/$USER/envs/opacus
-
-module purge 
-module load anaconda3/2022.5
+LIB_PATH=/home/$USER/dp-custom/custom_opacus
+CONDA_PATH=/data/nvme/$USER/anaconda3/envs/opacus
+source ~/.bashrc
 conda activate $CONDA_PATH
 ulimit -n 50000
 
@@ -27,6 +25,7 @@ export PYTHONUNBUFFERED=1
 export WANDB_MODE=offline
 
 python finetune_classifier_dp.py\
+    --dataset_path "/data/nvme/ashwinee/datasets/"\
     --dataset ${1}\
     --lr ${2}\
     --max_per_sample_grad_norm ${3}\
@@ -35,3 +34,4 @@ python finetune_classifier_dp.py\
     --epochs ${6}\
     --batch_size ${7}\
     --augmult ${8}\
+    ${9}\

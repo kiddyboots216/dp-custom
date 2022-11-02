@@ -4,7 +4,6 @@
 #SBATCH -n 1 # number of tasks (i.e. processes)
 #SBATCH --cpus-per-task=4 # number of cores per task
 #SBATCH --mem-per-cpu=4G         # memory per cpu-core (4G is default)
-#SBATCH --constraint=gpu80
 #SBATCH --gres=gpu:1
 #SBATCH -t 1-23:00 # time requested (D-HH:MM)
 #SBATCH -o Report/%j.out # STDOUT
@@ -17,11 +16,9 @@ date
 echo starting job...
 
 # replace these as necessary
-LIB_PATH=/scratch/gpfs/$USER/dp-custom/custom_opacus
-CONDA_PATH=/scratch/gpfs/$USER/envs/opacus
-
-module purge 
-module load anaconda3/2022.5
+LIB_PATH=/home/$USER/dp-custom/custom_opacus
+CONDA_PATH=/data/nvme/$USER/anaconda3/envs/opacus
+source ~/.bashrc
 conda activate $CONDA_PATH
 ulimit -n 50000
 
@@ -36,6 +33,7 @@ export PYTHONUNBUFFERED=1
 export WANDB_MODE=offline
 
 python finetune_classifier_dp.py\
+    --dataset_path "/data/nvme/ashwinee/datasets/"\
     --dataset ${1}\
     --lr ${2}\
     --max_per_sample_grad_norm ${3}\
