@@ -74,13 +74,11 @@ class SparsefluenceOptimizer(DPOptimizer):
         Performs gradient clipping.
         Stores clipped and aggregated gradients into `p.summed_grad```
         """
-
-        # n_layers, other stuff
-        # other stuff = batch size, others
         per_sample_norms = self.per_sample_norms
         per_sample_clip_factor = (self.max_grad_norm[indices] / (per_sample_norms + 1e-6)).clamp(
                 max=1.0
-            )
+        )
+        # per_sample_clip_factor = per_sample_clip_factor / self.base_grad_norm
         for idx, p in enumerate(self.params):
             _check_processed_flag(p.grad_sample)
 
@@ -115,7 +113,8 @@ class SparsefluenceOptimizer(DPOptimizer):
                 secure_mode=self.secure_mode,
             )
             # p.summed_grad = p.summed_grad / self.base_grad_norm
-            p.grad = (p.summed_grad + noise).view_as(p.grad)
+            print("GRAD NORM", p.summed_grad.norm())
+            p.grad = (p.summed_grad + noise).view_as(p)
 
             _mark_as_processed(p.summed_grad)
 

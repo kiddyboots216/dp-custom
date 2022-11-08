@@ -17,16 +17,60 @@ class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
         code.interact("*interactive*", local=self.curframe_locals)
 
+class FilterAccountant(IAccountant):
+    def __init__(self, 
+                 epsilon, 
+                 delta, 
+                 sample_rate, 
+                 optimizer,
+                 l2_norm_budget: bool = False,
+        ):
+        self.epsilon = epsilon
+        self.delta = delta
+        self.sample_rate = sample_rate
+        self.optimizer = optimizer
+        self.max_grad_norm = self.optimizer.max_grad_norm
+        if l2_norm_budget:
+            self.l2_squared_budget = self.get_l2_norm_budget()
+            self.max_grad_norm = np.minimum(self.max_grad_norm, np.sqrt(self.l2_squared_budget))
+            self.privacy_spent = 0
+            self.privacy_step = lambda x: x**2
+            self.update_max_grad_norm = self._update_max_grad_norm
+            self.update_violations = lambda *args, **kwargs: None
+            self.get_privacy_usage = lambda: self.privacy_spent / self.l2_squared_budget
+
+    def get_l2_norm_budget(self):
+        return cal_overall_norm_budget(self.optimizer.noise_multiplier * self.optimizer.max_grad_norm, self.epsilon, self.delta)**2
+    
+    def _update_max_grad_norm(self):
+        self.max_grad_norm = np.minimum(self.max_grad_norm, np.sqrt(self.l2_squared_budget - self.privacy_spent))
+
+    def step(self):  
+        self.privacy_spent += self.privacy_step(self.max_grad_norm)
+        self.update_max_grad_norm()
+        
+    @property
+    def privacy_usage(self):
+        return self.get_privacy_usage()
+    
+    def get_epsilon(
+        self, *args, **kwargs,
+    ):
+        return self.epsilon
+    
+    @classmethod
+    def mechanism(cls) -> str:
+        return "gdp_filter"
+    
+    def __len__(self):
+        return None
+    
 class InfluenceBoundedRDPAccountant(IAccountant):
-    """
-    This class implements the subsampled 
-    """
     DEFAULT_ALPHAS = [1.0+x/100.0 for x in range(1,100)]+[2.0 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
 
     def __init__(self, 
                  epsilon, 
                  delta, 
-                 model, 
                  sample_rate, 
                  optimizer, 
                  n_data,
@@ -36,8 +80,7 @@ class InfluenceBoundedRDPAccountant(IAccountant):
         if alphas is None:
             alphas = self.DEFAULT_ALPHAS
         self.n_data = n_data
-        self.model = model
-        self.device = next(model.parameters()).device
+        self.device = "cuda:0"
         self.optimizer = optimizer
         self.epsilon = epsilon
         self.delta = delta
@@ -52,6 +95,7 @@ class InfluenceBoundedRDPAccountant(IAccountant):
             self.alphas=alphas
         if l2_norm_budget and sample_rate == 1: # we will use GDP
             self.l2_squared_budget = self.get_l2_norm_budget()
+            self.max_grad_norm = torch.minimum(self.max_grad_norm, torch.sqrt(self.l2_squared_budget))
             self.privacy_spent = torch.zeros(self.n_data, device=self.device)
             self.privacy_step = lambda x: x**2
             self.update_max_grad_norm = self._update_max_grad_norm
@@ -88,11 +132,14 @@ class InfluenceBoundedRDPAccountant(IAccountant):
         per_sample_norms = torch.minimum(per_sample_norms, self.max_grad_norm[batch_indices])
         self.cache_norms(batch_indices, per_sample_norms)
 
+    def remaining_norm(self):
+        return self.max_grad_norm[self.max_grad_norm>0].shape.numel()
+
     def step(self):
         """
-        1) Spend privacy based on the cached norms; "if I see this gradient I will clip it to this value"
-        2) Compose this privacy with your privacy spent so far
-        3) Update violations based on what budget you have exceeded; for GDP this will spend exactly, for RDP this will overspend
+        1) Determine per sample clipping thresholds (done by optimizer)
+        2) Determine what we can afford
+        3) Clip according to what we can afford and update privacy spent accordingly
         """            
         self.privacy_spent += self.privacy_step(self.retrieve_norms())
         self.update_max_grad_norm() # does nothing for RDP, only does something for GDP
@@ -101,6 +148,7 @@ class InfluenceBoundedRDPAccountant(IAccountant):
         # self.privacy_usage = self.get_privacy_usage(self.privacy_spent) # minimize over RDP orders, this is just for reporting
     
     def _update_max_grad_norm(self):
+        # assert self.l2_squared_budget > self.privacy_spent # measure twice, cut once
         self.max_grad_norm = torch.minimum(self.max_grad_norm, torch.sqrt(self.l2_squared_budget - self.privacy_spent))
 
     @property

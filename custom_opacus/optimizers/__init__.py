@@ -41,6 +41,8 @@ def get_optimizer_class(clipping: str, distributed: bool):
         return DistributedPerLayerOptimizer
     elif clipping == "budget" and distributed is False:
         return SparsefluenceOptimizer
+    elif clipping == "filter" and distributed is False:
+        return DPOptimizer
     elif clipping == "budget" and distributed is True:
         return DistributedSparsefluenceOptimizer
 

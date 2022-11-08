@@ -19,16 +19,9 @@ from typing import Callable, List, Optional, Union
 
 import torch
 from opacus.optimizers.utils import params
+from opt_einsum.contract import contract
 from torch import nn
 from torch.optim import Optimizer
-import numpy as np
-
-import pdb
-import code
-
-class MyPdb(pdb.Pdb):
-    def do_interact(self, arg):
-        code.interact("*interactive*", local=self.curframe_locals)
 
 
 logger = logging.getLogger(__name__)
@@ -120,7 +113,7 @@ def _generate_noise(
         reference: The reference Tensor to get the appropriate shape and device
             for generating the noise
         generator: The PyTorch noise generator
-        secure_mode: boolean showing if "secure" noise need to be generate
+        secure_mode: boolean showing if "secure" noise need to be generated
             (see the notes)
 
     Notes:
@@ -193,7 +186,7 @@ class DPOptimizer(Optimizer):
     Examples:
         >>> module = MyCustomModel()
         >>> optimizer = torch.optim.SGD(module.parameters(), lr=0.1)
-        >>> dp_optimzer = DPOptimizer(
+        >>> dp_optimizer = DPOptimizer(
         ...     optimizer=optimizer,
         ...     noise_multiplier=1.0,
         ...     max_grad_norm=1.0,
@@ -211,7 +204,6 @@ class DPOptimizer(Optimizer):
         loss_reduction: str = "mean",
         generator=None,
         secure_mode: bool = False,
-        **kwargs,
     ):
         """
 
@@ -260,18 +252,23 @@ class DPOptimizer(Optimizer):
     def _get_flat_grad_sample(self, p: torch.Tensor):
         """
         Return parameter's per sample gradients as a single tensor.
+
         By default, per sample gradients (``p.grad_sample``) are stored as one tensor per
         batch basis. Therefore, ``p.grad_sample`` is a single tensor if holds results from
         only one batch, and a list of tensors if gradients are accumulated over multiple
         steps. This is done to provide visibility into which sample belongs to which batch,
         and how many batches have been processed.
+
         This method returns per sample gradients as a single concatenated tensor, regardless
         of how many batches have been accumulated
+
         Args:
             p: Parameter tensor. Must have ``grad_sample`` attribute
+
         Returns:
             ``p.grad_sample`` if it's a tensor already, or a single tensor computed by
             concatenating every tensor in ``p.grad_sample`` if it's a list
+
         Raises:
             ValueError
                 If ``p`` is missing ``grad_sample`` attribute
@@ -345,7 +342,7 @@ class DPOptimizer(Optimizer):
         """
         ret = []
         for p in self.params:
-            ret.append(_get_flat_grad_sample(p))
+            ret.append(self._get_flat_grad_sample(p))
         return ret
 
     @property
@@ -396,31 +393,26 @@ class DPOptimizer(Optimizer):
         Performs gradient clipping.
         Stores clipped and aggregated gradients into `p.summed_grad```
         """
-        # for g in self.grad_samples:
-        #     self.linfty_norm = max(self.linfty_norm, g.max())
-        # [[b, param_shape] for param in parameters]
-        # MyPdb().set_trace()
-        # for p in self.params:
-            # p.grad_sample = p.grad_sample.view(p.grad_sample.shape[0]//16, 16, *(i for i in p.grad_sample.shape[1:])).sum(dim=1)
+
         per_param_norms = [
             g.reshape(len(g), -1).norm(2, dim=-1) for g in self.grad_samples
         ]
         per_sample_norms = torch.stack(per_param_norms, dim=1).norm(2, dim=1)
-        # print(self.max_grad_norm)
         per_sample_clip_factor = (self.max_grad_norm / (per_sample_norms + 1e-6)).clamp(
             max=1.0
         )
+        per_sample_clip_factor = per_sample_clip_factor / (self.max_grad_norm + 1e-6)
 
         for p in self.params:
             _check_processed_flag(p.grad_sample)
-
-            grad_sample = _get_flat_grad_sample(p)
-            grad = torch.einsum("i,i...", per_sample_clip_factor, grad_sample)
+            grad_sample = self._get_flat_grad_sample(p)
+            grad = contract("i,i...", per_sample_clip_factor, grad_sample)
 
             if p.summed_grad is not None:
                 p.summed_grad += grad
             else:
                 p.summed_grad = grad
+
             _mark_as_processed(p.grad_sample)
 
     def add_noise(self):
@@ -430,6 +422,7 @@ class DPOptimizer(Optimizer):
 
         for p in self.params:
             _check_processed_flag(p.summed_grad)
+
             noise = _generate_noise(
                 # std=self.noise_multiplier * self.max_grad_norm,
                 std=self.noise_multiplier,
@@ -437,9 +430,9 @@ class DPOptimizer(Optimizer):
                 generator=self.generator,
                 secure_mode=self.secure_mode,
             )
-            p.summed_grad = p.summed_grad / self.max_grad_norm
-            p.grad = (p.summed_grad + noise).view_as(p.grad)
-            # print(f"SNR {p.summed_grad.norm(p=2)/noise.norm(p=2)}")
+            # p.summed_grad = p.summed_grad / self.max_grad_norm
+            print("GRAD NORM", p.summed_grad.norm())
+            p.grad = (p.summed_grad + noise).view_as(p)
 
             _mark_as_processed(p.summed_grad)
 
@@ -473,7 +466,7 @@ class DPOptimizer(Optimizer):
         """
 
         if set_to_none is False:
-            logger.info(
+            logger.debug(
                 "Despite set_to_none is set to False, "
                 "opacus will set p.grad_sample and p.summed_grad to None due to "
                 "non-trivial gradient accumulation behaviour"
@@ -518,9 +511,10 @@ class DPOptimizer(Optimizer):
                 closure()
 
         if self.pre_step():
-            return self.original_optimizer.step()
+            self.original_optimizer.step()
+            return True
         else:
-            return None
+            return False
 
     def __repr__(self):
         return self.original_optimizer.__repr__()

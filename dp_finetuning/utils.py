@@ -61,7 +61,7 @@ def parse_args():
     parser.add_argument(
         '--max_per_sample_grad_norm', 
         default=1, 
-        type=int
+        type=float,
     )
     parser.add_argument(
         "--disable_dp",
@@ -133,6 +133,15 @@ def parse_args():
         default=False,
         help="Do vanilla DPSGD instead of using the filter"
     )
+    parser.add_argument(
+        "--mode",
+        choices=[
+            "individual",
+            "dpsgdfilter",
+            "vanilla",
+        ],
+        help="What mode of DPSGD optimization to use. Individual and Dpsgdfilter both use GDP filter."
+    )
     args = parser.parse_args()
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
     for arg in vars(args):
@@ -163,8 +172,10 @@ def get_features(f, images, interp_size=224, batch=256):
 
 def download_things(args):
     dataset_path = args.dataset_path
-
-    ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
+    if args.dataset in ["SVHN", "STL10"]:
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='train', download=True)
+    else:
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
 
 def extract_features(args, images_train, images_test):

@@ -20,7 +20,7 @@ from typing import IO, Any, BinaryIO, Dict, List, Optional, Tuple, Union
 import torch
 from opacus.accountants import create_accountant
 from opacus.accountants.utils import get_noise_multiplier
-from opacus.accountants.influence_accountant import InfluenceBoundedRDPAccountant
+from opacus.accountants.influence_accountant import InfluenceBoundedRDPAccountant, FilterAccountant
 from opacus.data_loader import DPDataLoader, switch_generator
 from opacus.distributed import DifferentiallyPrivateDistributedDataParallel as DPDDP
 from opacus.grad_sample import (
@@ -444,17 +444,22 @@ class PrivacyEngine:
         )
         if "budget" in clipping:
             self.accountant = InfluenceBoundedRDPAccountant(n_data=len(data_loader.dataset),
-                                                        model=module,
                                                         optimizer=optimizer,
                                                         epsilon=epsilon,
                                                         delta=delta,
                                                         sample_rate=sample_rate,
                                                         l2_norm_budget=True)
+        elif "filter" in clipping:
+            self.accountant = FilterAccountant(optimizer=optimizer,
+                                                epsilon=epsilon,
+                                                delta=delta,
+                                                sample_rate=sample_rate,
+                                                l2_norm_budget=True)
         else:
             optimizer.attach_step_hook(
                 self.accountant.get_optimizer_hook_fn(sample_rate=sample_rate)
             )
-
+        print("Making an Accountant ", self.accountant.mechanism())
         return module, optimizer, data_loader
 
     def make_private_with_epsilon(
