@@ -15,7 +15,7 @@
 from .accountant import IAccountant
 from .gdp import GaussianAccountant
 from .rdp import RDPAccountant
-from .influence_accountant import InfluenceBoundedRDPAccountant, FilterAccountant
+from .influence_accountant import InfluenceBoundedRDPAccountant, FilterAccountant, SamplingFilterAccountant
 
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "RDPAccountant",
     "InfluenceBoundedRDPAccountant",
     "FilterAccountant",
+    "SamplingFilterAccountant",
 ]
 
 

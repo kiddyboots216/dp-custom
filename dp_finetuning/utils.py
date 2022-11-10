@@ -123,6 +123,11 @@ def parse_args():
         default=0,
     )
     parser.add_argument(
+        "--momentum",
+        type=float,
+        default=0.9,
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=4,
@@ -139,6 +144,7 @@ def parse_args():
             "individual",
             "dpsgdfilter",
             "vanilla",
+            "sampling",
         ],
         help="What mode of DPSGD optimization to use. Individual and Dpsgdfilter both use GDP filter."
     )
@@ -258,9 +264,7 @@ def get_ds(args):
         ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
         if args.batch_size == -1:
             args.batch_size = len(ds_train)
-            train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=False, **kwargs)
-        else:
-            train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, **kwargs)
+        train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, **kwargs)
     x_test = np.load(extracted_test_path)
     features_test = torch.from_numpy(x_test)
     ds_test = dataset_with_indices(TensorDataset)(features_test, labels_test)

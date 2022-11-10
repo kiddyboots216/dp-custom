@@ -20,7 +20,7 @@ from typing import IO, Any, BinaryIO, Dict, List, Optional, Tuple, Union
 import torch
 from opacus.accountants import create_accountant
 from opacus.accountants.utils import get_noise_multiplier
-from opacus.accountants.influence_accountant import InfluenceBoundedRDPAccountant, FilterAccountant
+from opacus.accountants.influence_accountant import InfluenceBoundedRDPAccountant, FilterAccountant, SamplingFilterAccountant
 from opacus.data_loader import DPDataLoader, switch_generator
 from opacus.distributed import DifferentiallyPrivateDistributedDataParallel as DPDDP
 from opacus.grad_sample import (
@@ -160,6 +160,7 @@ class PrivacyEngine:
         n_stale: int = 0,
         augmult: int=0,
         grad_sample_mode="hooks",
+        disable_dp: bool = False,
     ) -> DPOptimizer:
         if isinstance(optimizer, DPOptimizer):
             optimizer = optimizer.original_optimizer
@@ -335,6 +336,7 @@ class PrivacyEngine:
         epsilon: float = 2.0,
         delta: float = 1e-5,
         augmult: int = 0,
+        expected_sample_rate: float = 1e-2,
         # **kwargs,
     ) -> Tuple[GradSampleModule, DPOptimizer, DataLoader]:
         """
@@ -422,6 +424,8 @@ class PrivacyEngine:
 
         sample_rate = 1 / len(data_loader)
         expected_batch_size = int(len(data_loader.dataset) * sample_rate)
+        if expected_sample_rate == -1:
+            expected_batch_size = 10000
 
         # expected_batch_size is the *per worker* batch size
         if distributed:
@@ -455,6 +459,12 @@ class PrivacyEngine:
                                                 delta=delta,
                                                 sample_rate=sample_rate,
                                                 l2_norm_budget=True)
+        elif "sampling" in clipping:
+            self.accountant = SamplingFilterAccountant(n_data=len(data_loader.dataset),
+                                                optimizer=optimizer,
+                                                epsilon=epsilon,
+                                                delta=delta,
+                                                sample_rate=expected_sample_rate)
         else:
             optimizer.attach_step_hook(
                 self.accountant.get_optimizer_hook_fn(sample_rate=sample_rate)

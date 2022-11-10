@@ -9,7 +9,7 @@ from typing import Callable
 from tqdm import tqdm
 import pickle
 
-from os.path import exists
+import os
 import pdb
 import code
 
@@ -17,6 +17,150 @@ class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
         code.interact("*interactive*", local=self.curframe_locals)
 
+class SamplingFilterAccountant(IAccountant):
+    DEFAULT_ALPHAS = [1.0+x/100.0 for x in range(1,100)]+[2.0 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
+    def __init__(self, 
+                 epsilon, 
+                 delta, 
+                 sample_rate, # this is a constant 
+                 optimizer,
+                 n_data,
+        ):
+        self.epsilon = epsilon
+        self.delta = delta
+        self.sample_rate = sample_rate
+        self.optimizer = optimizer
+        self.n_data = n_data
+        self.device = "cuda:0"
+        self.max_grad_norm = torch.ones(self.n_data, device=self.device) * self.optimizer.max_grad_norm
+        self.base_grad_norm = self.max_grad_norm.clone()
+        self.cache = self.max_grad_norm.clone()
+        self.sample_rate = sample_rate
+        self.alphas=self.DEFAULT_ALPHAS
+        self.violations = torch.zeros(self.n_data, device=self.device)
+        self.rdp_budget = get_rdp_budget(epsilon=self.epsilon,delta=self.delta,orders=self.alphas).to(self.device)
+        self.privacy_spent = torch.zeros(size=(self.n_data, len(self.alphas)), device=self.device)
+        if self.sample_rate == -1:
+            self.privacy_step = lambda x: self.get_rdp_spent(x)
+        else:
+            self.privacy_step = lambda x: self.get_rdp_spent(self.sample_rate * x)
+        self.update_max_grad_norm = lambda *args, **kwargs: None
+        self.update_violations = self.get_privacy_violations
+        self.get_privacy_usage = lambda: torch.min(self.privacy_spent/self.rdp_budget, dim=1)[0]
+        self.rdp_dict = self.pre_compute_rdp()
+        
+    def step(self):  
+        if self.sample_rate == -1:
+            norms = self.retrieve_norms()
+            norms = norms * 0.1/norms.mean() * (1 - self.violations)
+            # MyPdb().set_trace()
+            per_iter_privacy = self.privacy_step(norms)
+        else:
+            per_iter_privacy = self.privacy_step(self.retrieve_norms())
+        print(f"Per iter privacy {per_iter_privacy[0][0]:.4f}")
+        self.privacy_spent += per_iter_privacy
+        self.update_max_grad_norm() # does nothing for RDP, only does something for GDP
+        self.update_violations()    # does nothing for GDP, only does something for RDP
+    
+    def cache_norms(self, batch_indices, norms):
+        self.cache[batch_indices] = norms
+        
+    def retrieve_norms(self):
+        return self.cache * (1 - self.violations)
+
+    def compute_norms(self, batch_indices):
+        """
+        Computes the norms from what is stored in optimizer
+        Stores the output in cache
+        Update max_grad_norm with what was sampled so that optimizer will clip those to 0
+        """
+        per_sample_norms = self.optimizer.per_sample_norms
+        self.cache_norms(batch_indices, per_sample_norms)
+        
+    def get_privacy_violations(self):
+        self.violations = torch.prod(self.privacy_spent>self.rdp_budget, axis=1)    
+    
+    def get_violations(self, batch_indices):
+        samples = self.get_sampled(batch_indices).long() # 1 if sampled else 0
+        violations = (1 - self.violations[batch_indices]) * (samples) # 1 iff non-bankrupt AND was sampled
+        print(f"% unviolated {violations.sum()/len(violations):.4f}")
+        return violations
+    
+    def get_sampled(self, batch_indices):
+        if self.sample_rate == -1:
+            
+            norms = self.retrieve_norms()[batch_indices]
+            sample_vec = norms * 0.1/norms.mean()
+        else:
+            sample_vec = self.sample_rate * self.retrieve_norms()[batch_indices]
+        mask = (
+                torch.rand(batch_indices.shape[0], device=self.device)
+                < sample_vec
+            )
+        # indices = mask.nonzero(as_tuple=False).reshape(-1)
+        indices = mask.reshape(-1)
+        return indices
+    
+    @property
+    def privacy_usage(self):
+        return self.get_privacy_usage()
+    
+    def get_rdp_spent(self, per_sample_sample_rate):
+        print(per_sample_sample_rate)
+        per_sample_sample_rate = per_sample_sample_rate.cpu().numpy()
+        privacy_spent = torch.zeros(size = (self.n_data, len(self.alphas)), device=self.device)
+        for i in range(self.n_data):
+            sample_rate = per_sample_sample_rate[i]
+            if(self.violations[i] or sample_rate == 0):
+                privacy_spent[i]=0
+            else:
+                privacy_spent[i] = self.get_rdp(sample_rate)
+        return privacy_spent
+
+    def get_rdp(self, sample_rate):
+        key = f"{sample_rate:.2f}"
+        if key in self.rdp_dict.keys():
+            return torch.tensor(self.rdp_dict[key])
+        else:
+            return torch.tensor(self.rdp_dict["max"])
+
+    def get_epsilon(
+        self, delta: float, alphas: Optional[List[Union[float, int]]] = None):
+        return self.epsilon
+    
+    def pre_compute_rdp(self):
+        file_name=f"rdp_calculation_{self.optimizer.noise_multiplier:.3f}.dic"
+
+        if os.path.exists(file_name):
+            with open(file_name, 'rb') as handle:
+                rdp_dict=pickle.load(handle)
+        else:
+            noise_multiplier=self.optimizer.noise_multiplier
+            rdp_dict=dict()
+            print("pre-calculating rdp")
+            NUMBER_OF_SAMPLING_RATES=10000 + 1
+            for i in range(NUMBER_OF_SAMPLING_RATES):
+                key_i= "%.4f"%(0.0+i/10000)
+                rdp_dict[key_i]=privacy_analysis.compute_rdp(
+                                q=0.0+i/10000,
+                                noise_multiplier=self.optimizer.noise_multiplier,
+                                steps=1,
+                                orders=self.alphas,
+                            )
+                if i % 1000 == 0:
+                    print(f"RDP DICT[{key_i}] : {rdp_dict[key_i]}")
+            rdp_dict['max']=rdp_dict["%.4f"%(0.0+(NUMBER_OF_SAMPLING_RATES-1)/10000)]
+            with open(file_name, 'wb') as handle:
+                pickle.dump(rdp_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        return rdp_dict
+    
+    @classmethod
+    def mechanism(cls) -> str:
+        return "sampling_filter"
+    
+    def __len__(self):
+        return None
+    
 class FilterAccountant(IAccountant):
     def __init__(self, 
                  epsilon, 
@@ -33,6 +177,7 @@ class FilterAccountant(IAccountant):
         if l2_norm_budget:
             self.l2_squared_budget = self.get_l2_norm_budget()
             self.max_grad_norm = np.minimum(self.max_grad_norm, np.sqrt(self.l2_squared_budget))
+            print(f"BUDGET {self.l2_squared_budget:.4f} AND PER-ITER THRESHOLD {self.max_grad_norm:.4f}")
             self.privacy_spent = 0
             self.privacy_step = lambda x: x**2
             self.update_max_grad_norm = self._update_max_grad_norm
@@ -46,8 +191,9 @@ class FilterAccountant(IAccountant):
         self.max_grad_norm = np.minimum(self.max_grad_norm, np.sqrt(self.l2_squared_budget - self.privacy_spent))
 
     def step(self):  
-        self.privacy_spent += self.privacy_step(self.max_grad_norm)
-        self.update_max_grad_norm()
+        self.privacy_spent += self.privacy_step(self.retrieve_norms())
+        self.update_max_grad_norm() # does nothing for RDP, only does something for GDP
+        self.update_violations()
         
     @property
     def privacy_usage(self):
@@ -77,8 +223,6 @@ class InfluenceBoundedRDPAccountant(IAccountant):
                  alphas: Optional[List[Union[float, int]]] = None,
                  l2_norm_budget: bool = False,
         ):
-        if alphas is None:
-            alphas = self.DEFAULT_ALPHAS
         self.n_data = n_data
         self.device = "cuda:0"
         self.optimizer = optimizer
@@ -102,7 +246,7 @@ class InfluenceBoundedRDPAccountant(IAccountant):
             self.update_violations = lambda *args, **kwargs: None
             self.get_privacy_usage = lambda: self.privacy_spent.max() / self.l2_squared_budget
         else: # we will use RDP
-            self.rdp_budget=get_rdp_budget(epsilon=self.epsilon,delta=self.delta,orders=alphas).to(self.device)
+            self.rdp_budget=get_rdp_budget(epsilon=self.epsilon,delta=self.delta,orders=self.alphas).to(self.device)
             self.privacy_spent = torch.zeros(size=(self.n_data, len(self.alphas)), device=self.device)
             self.privacy_step = lambda x: self.get_rdp_spent(self.optimizer.noise_multiplier * self.max_grad_norm/x)
             self.update_max_grad_norm = lambda *args, **kwargs: None
@@ -214,14 +358,14 @@ class InfluenceBoundedRDPAccountant(IAccountant):
         file_name+="%.3f" %self.sample_rate
         file_name+=".dic"
 
-        if exists(file_name):
+        if os.path.exists(file_name):
             with open(file_name, 'rb') as handle:
                 rdp_dict=pickle.load(handle)
         else:
             noise_multiplier=self.optimizer.noise_multiplier
             rdp_dict=dict()
             print("pre-calculating rdp")
-            NUMBER_OF_MULTIPLIERS=10000
+            NUMBER_OF_MULTIPLIERS=20000
             for i in range(NUMBER_OF_MULTIPLIERS):
                 # if i%100==0:
                 #     print(i)
@@ -233,9 +377,8 @@ class InfluenceBoundedRDPAccountant(IAccountant):
                                 steps=1,
                                 orders=self.alphas,
                             )
-            # print(rdp_dict)
             rdp_dict['max']=rdp_dict["%.2f"%(0.01+(NUMBER_OF_MULTIPLIERS-1)/100)]
-            # print(rdp_dict)
+            print(rdp_dict)
             with open(file_name, 'wb') as handle:
                 pickle.dump(rdp_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
         return rdp_dict

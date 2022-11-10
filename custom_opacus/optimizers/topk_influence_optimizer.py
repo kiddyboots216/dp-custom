@@ -59,7 +59,7 @@ class SparsefluenceOptimizer(DPOptimizer):
         per_sample_grads = torch.cat([g.view(len(g), -1) for g in self.grad_samples], dim=1)
         return per_sample_grads
 
-    def compute_norms(self, violations):
+    def compute_norms(self):
         if self.augmult > -1:
             for p in self.params:
                 p.grad_sample = p.grad_sample.view(p.grad_sample.shape[0]//max(1,self.augmult), max(1,self.augmult), *(i for i in p.grad_sample.shape[1:])).mean(dim=1)
@@ -67,17 +67,18 @@ class SparsefluenceOptimizer(DPOptimizer):
             g.view(len(g), -1).norm(2, dim=-1) for g in self.grad_samples
         ]
         per_sample_norms = torch.stack(per_param_norms, dim=1).norm(2, dim=1)
-        self.per_sample_norms = (1 - violations) * per_sample_norms
+        self.per_sample_norms = per_sample_norms
         
-    def clip_and_accumulate(self, indices):
+    def clip_and_accumulate(self, indices, violations):
         """
         Performs gradient clipping.
         Stores clipped and aggregated gradients into `p.summed_grad```
+        violations: 1 if ok to use this grad, else 0
         """
         per_sample_norms = self.per_sample_norms
-        per_sample_clip_factor = (self.max_grad_norm[indices] / (per_sample_norms + 1e-6)).clamp(
+        per_sample_clip_factor = (violations * self.max_grad_norm[indices] / (per_sample_norms + 1e-6)).clamp(
                 max=1.0
-        )
+        ) # if your max grad norm is 0, you are violated or not sampled
         # per_sample_clip_factor = per_sample_clip_factor / self.base_grad_norm
         for idx, p in enumerate(self.params):
             _check_processed_flag(p.grad_sample)
@@ -85,7 +86,7 @@ class SparsefluenceOptimizer(DPOptimizer):
             grad_sample = self._get_flat_grad_sample(p)
             # MyPdb().set_trace()
 
-            grad_sample = torch.einsum("i, i...->i...", 1/(self.max_grad_norm[indices] + 1e-6), grad_sample)
+            # grad_sample = torch.einsum("i, i...->i...", 1/(self.max_grad_norm[indices] + 1e-6), grad_sample)
             # grad_sample = torch.einsum("i, i...->i...", 1/(per_sample_norms + 1e-6), grad_sample) BAD BAD
 
             grad = torch.einsum("i,i...", per_sample_clip_factor, grad_sample)
@@ -112,14 +113,18 @@ class SparsefluenceOptimizer(DPOptimizer):
                 generator=self.generator,
                 secure_mode=self.secure_mode,
             )
-            # p.summed_grad = p.summed_grad / self.base_grad_norm
+            p.summed_grad = p.summed_grad / self.base_grad_norm
             print("GRAD NORM", p.summed_grad.norm())
+            if p.summed_grad.norm() == 0:
+                print("NO MORE OPTIMIZATION!")
+                return True
             p.grad = (p.summed_grad + noise).view_as(p)
+            print("NOISY GRAD NORM", p.grad.norm())
 
             _mark_as_processed(p.summed_grad)
 
     def pre_step(
-        self, indices, closure: Optional[Callable[[], float]] = None
+        self, *args, closure: Optional[Callable[[], float]] = None
     ) -> Optional[float]:
         """
         Perform actions specific to ``DPOptimizer`` before calling
@@ -129,7 +134,7 @@ class SparsefluenceOptimizer(DPOptimizer):
             closure: A closure that reevaluates the model and
                 returns the loss. Optional for most optimizers.
         """
-        self.clip_and_accumulate(indices)
+        self.clip_and_accumulate(*args)
         if self._check_skip_next_step():
             self._is_last_step_skipped = True
             return False
@@ -143,12 +148,12 @@ class SparsefluenceOptimizer(DPOptimizer):
         self._is_last_step_skipped = False
         return True
 
-    def step(self, indices, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+    def step(self, *args, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
         if closure is not None:
             with torch.enable_grad():
                 closure()
 
-        if self.pre_step(indices):
+        if self.pre_step(*args):
             self.original_optimizer.step()
             return True
         else:

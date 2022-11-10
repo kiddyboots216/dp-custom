@@ -40,7 +40,7 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
                     optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
                     optimizer.step()
                 elif args.mode in ["individual"]:
-                    optimizer.compute_norms(privacy_engine.accountant.get_violations(indices))
+                    optimizer.compute_norms()
                     privacy_engine.accountant.compute_norms(indices)
                     privacy_engine.accountant.step()
                     optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
@@ -51,18 +51,18 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
                     real_step = optimizer.step()
                     if real_step:
                         privacy_engine.accountant.step()
-                elif args.mode in ["individual"]:
-                    optimizer.compute_norms(privacy_engine.accountant.get_violations(indices))
+                elif args.mode in ["individual", "sampling"]:
+                    optimizer.compute_norms()
                     privacy_engine.accountant.compute_norms(indices)
-                    optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
-                    real_step = optimizer.step(indices)
+                    optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm # for sampling, does nothing
+                    real_step = optimizer.step(indices, privacy_engine.accountant.get_violations(indices))
                     if real_step:
                         privacy_engine.accountant.step()
-                        # wandb.log({"Nonbankrupt" : privacy_engine.accountant.remaining_norm()})
-        # print(f"Privacy Usage {args.epsilon * privacy_engine.accountant.privacy_usage.max().detach().item():.2f}")
+                        print("PRIVACY USAGE SO FAR ", privacy_engine.accountant.privacy_usage.max())
         losses.append(loss.item())
 
     print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
+    return np.mean(losses)
 
 def do_test(model_dict, data, target, criterion, test_stats):
     for key, model in model_dict.items():
@@ -146,32 +146,34 @@ def main():
         model = nn.DataParallel(model)
     if args.standardize_weights:
         nn.init.normal_(model.weight, mean=0.0, std=1.0/np.sqrt(num_features))
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, nesterov=False)
     privacy_engine = None
 
-    if not args.disable_dp:
-        privacy_engine = PrivacyEngine(secure_mode=args.secure_rng,
-                                        accountant="gdp")
-        clipping_dict = {
-            "vanilla": "flat",
-            "individual": "budget",
-            "dpsgdfilter": "filter"
-        }
-        clipping = clipping_dict[args.mode]
-        model, optimizer, train_loader = privacy_engine.make_private(
-            module=model,
-            optimizer=optimizer,
-            data_loader=train_loader,
-            noise_multiplier=args.sigma,
-            max_grad_norm=args.max_per_sample_grad_norm,
-            clipping=clipping,
-            epsilon=args.epsilon,
-            delta=args.delta,
-            poisson_sampling=True,
-            augmult=args.augmult,
-        )
-        if args.augmult > -1 or args.num_classes>10:
-            train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=10000, optimizer=optimizer)
+    # if not args.disable_dp:
+    privacy_engine = PrivacyEngine(secure_mode=args.secure_rng,
+                                    accountant="gdp" if not args.mode in ["vanilla"] else "rdp")
+    clipping_dict = {
+        "vanilla": "flat",
+        "individual": "budget",
+        "dpsgdfilter": "filter",
+        "sampling": "sampling",
+    }
+    clipping = clipping_dict[args.mode]
+    model, optimizer, train_loader = privacy_engine.make_private(
+        module=model,
+        optimizer=optimizer,
+        data_loader=train_loader,
+        noise_multiplier=args.sigma,
+        max_grad_norm=args.max_per_sample_grad_norm,
+        clipping=clipping,
+        epsilon=args.epsilon,
+        delta=args.delta,
+        poisson_sampling=True,
+        augmult=args.augmult,
+        expected_sample_rate=-1,
+    )
+    if args.augmult > -1 or args.num_classes>10:
+        train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=10000, optimizer=optimizer)
 
     print("TRAIN LOADER LEN", len(train_loader))
     ### MAKE SOME AVERAGING UTILITES
@@ -180,9 +182,7 @@ def main():
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
     ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
     sched = None
-    # sched = torch.optim.lr_scheduler.CyclicLR(optimizer, 0.1, args.lr, step_size_up=10)
     sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = args.lr, steps_per_epoch=len(train_loader), epochs=args.epochs)
-
     ### WANDB - COMMENT OUT IF YOU DON'T WANT TO USE WANDB
 
     wandb.init(project="baselines", 
@@ -196,10 +196,25 @@ def main():
     #         "ema": ema_model,
     #         "swa": swa_model,
     #     }, args.device, test_loader)) # ensure we can test
+    import pdb
+    import code
+
+    class MyPdb(pdb.Pdb):
+        def do_interact(self, arg):
+            code.interact("*interactive*", local=self.curframe_locals)
+    # MyPdb().set_trace()
+    # reference = model._module.weight
+    # noise = torch.normal(
+    #     mean=0,
+    #     std=args.sigma,
+    #     size=reference.shape,
+    #     device=reference.device,
+    #     generator=generator,
+    # )
     for epoch in range(1, args.epochs + 1):
+        train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)   
         if sched is not None:
-            sched.step()
-        train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
+            sched.step(train_loss)     
         new_correct = test(args, {
             "model": model,
             "ema": ema_model,
@@ -216,6 +231,17 @@ def main():
         #     epsilon_reported = privacy_engine.accountant.get_epsilon(delta=1e-5)
         #     if epsilon_reported >= args.epsilon:
         #         break
+    print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
+    for _ in range(10):
+        momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
+        model._module.weight.data.add_(momentum_buffer, alpha=-1) # hardcode fake iterations
+        optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer'].mul_(args.momentum).add_(momentum_buffer)
+        new_correct = test(args, {
+            "model": model,
+        }, 
+        args.device, test_loader)
+        corrects.append(new_correct)
+    
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")
     if args.disable_dp:
@@ -223,7 +249,7 @@ def main():
     elif args.mode in ["vanilla"]:
         wandb.log({"best_acc": best_acc,
                 "epsilon": privacy_engine.accountant.get_epsilon(delta=1e-5)})
-    elif args.mode in ["individual", "dpsgdfilter"]:
+    elif args.mode in ["individual", "dpsgdfilter", "sampling"]:
         wandb.log({"best_acc": best_acc,
                 "epsilon": args.epsilon * privacy_engine.accountant.privacy_usage.max()})
 

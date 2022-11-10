@@ -31,7 +31,7 @@ __all__ = [
 
 
 def get_optimizer_class(clipping: str, distributed: bool):
-    if clipping == "flat" and distributed is False:
+    if clipping in ["flat", "filter"] and distributed is False:
         return DPOptimizer
     elif clipping == "flat" and distributed is True:
         return DistributedDPOptimizer
@@ -39,10 +39,8 @@ def get_optimizer_class(clipping: str, distributed: bool):
         return DPPerLayerOptimizer
     elif clipping == "per_layer" and distributed is True:
         return DistributedPerLayerOptimizer
-    elif clipping == "budget" and distributed is False:
+    elif clipping in ["budget", "sampling"] and distributed is False:
         return SparsefluenceOptimizer
-    elif clipping == "filter" and distributed is False:
-        return DPOptimizer
     elif clipping == "budget" and distributed is True:
         return DistributedSparsefluenceOptimizer
 
