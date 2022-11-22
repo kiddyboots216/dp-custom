@@ -336,7 +336,7 @@ class PrivacyEngine:
         epsilon: float = 2.0,
         delta: float = 1e-5,
         augmult: int = 0,
-        expected_sample_rate: float = 1e-2,
+        expected_sample_rate: float = 0.0,
         # **kwargs,
     ) -> Tuple[GradSampleModule, DPOptimizer, DataLoader]:
         """
@@ -424,8 +424,11 @@ class PrivacyEngine:
 
         sample_rate = 1 / len(data_loader)
         expected_batch_size = int(len(data_loader.dataset) * sample_rate)
-        if expected_sample_rate == -1:
-            expected_batch_size = 10000
+        if expected_sample_rate != 0:
+            if expected_sample_rate < 0:
+                expected_batch_size = int(len(data_loader.dataset) * (-1 * expected_sample_rate))
+            else:
+                expected_batch_size = 25000
 
         # expected_batch_size is the *per worker* batch size
         if distributed:

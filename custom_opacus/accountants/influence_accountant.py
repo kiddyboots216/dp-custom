@@ -40,19 +40,20 @@ class SamplingFilterAccountant(IAccountant):
         self.violations = torch.zeros(self.n_data, device=self.device)
         self.rdp_budget = get_rdp_budget(epsilon=self.epsilon,delta=self.delta,orders=self.alphas).to(self.device)
         self.privacy_spent = torch.zeros(size=(self.n_data, len(self.alphas)), device=self.device)
-        if self.sample_rate == -1:
+        if self.sample_rate < 0:
             self.privacy_step = lambda x: self.get_rdp_spent(x)
         else:
             self.privacy_step = lambda x: self.get_rdp_spent(self.sample_rate * x)
         self.update_max_grad_norm = lambda *args, **kwargs: None
         self.update_violations = self.get_privacy_violations
-        self.get_privacy_usage = lambda: torch.min(self.privacy_spent/self.rdp_budget, dim=1)[0]
+        # self.get_privacy_usage = lambda: torch.min(self.privacy_spent/self.rdp_budget, dim=0)[0]
+        self.get_privacy_usage = lambda: self.privacy_spent
         self.rdp_dict = self.pre_compute_rdp()
         
     def step(self):  
-        if self.sample_rate == -1:
+        if self.sample_rate < 0:
             norms = self.retrieve_norms()
-            norms = norms * 0.1/norms.mean() * (1 - self.violations)
+            norms = norms * (-1. * self.sample_rate)/norms.mean() * (1 - self.violations)
             # MyPdb().set_trace()
             per_iter_privacy = self.privacy_step(norms)
         else:
@@ -87,10 +88,9 @@ class SamplingFilterAccountant(IAccountant):
         return violations
     
     def get_sampled(self, batch_indices):
-        if self.sample_rate == -1:
-            
+        if self.sample_rate < 0: # enforce
             norms = self.retrieve_norms()[batch_indices]
-            sample_vec = norms * 0.1/norms.mean()
+            sample_vec = norms * (-1. * self.sample_rate)/norms.mean()
         else:
             sample_vec = self.sample_rate * self.retrieve_norms()[batch_indices]
         mask = (
@@ -103,7 +103,18 @@ class SamplingFilterAccountant(IAccountant):
     
     @property
     def privacy_usage(self):
-        return self.get_privacy_usage()
+        # MyPdb().set_trace()
+        # self.privacy_spent # N_DATA x N_ORDERS
+        epsilons = torch.zeros(self.n_data)
+        # MyPdb().set_trace()
+        for i in range(self.n_data):
+            eps, best_alpha = privacy_analysis.get_privacy_spent(
+                orders=self.alphas,
+                rdp=self.privacy_spent[i, :].cpu(),
+                delta=self.delta
+            )
+            epsilons[i] = eps
+        return torch.max(epsilons)
     
     def get_rdp_spent(self, per_sample_sample_rate):
         print(per_sample_sample_rate)
@@ -188,10 +199,12 @@ class FilterAccountant(IAccountant):
         return cal_overall_norm_budget(self.optimizer.noise_multiplier * self.optimizer.max_grad_norm, self.epsilon, self.delta)**2
     
     def _update_max_grad_norm(self):
+        if self.l2_squared_budget - self.privacy_spent < 0:
+            raise ValueError
         self.max_grad_norm = np.minimum(self.max_grad_norm, np.sqrt(self.l2_squared_budget - self.privacy_spent))
 
-    def step(self):  
-        self.privacy_spent += self.privacy_step(self.retrieve_norms())
+    def step(self):
+        self.privacy_spent += self.privacy_step(self.max_grad_norm)
         self.update_max_grad_norm() # does nothing for RDP, only does something for GDP
         self.update_violations()
         
@@ -424,9 +437,12 @@ def get_rdp_budget(
         + (np.log(delta) + np.log(orders_vec)) / (orders_vec - 1)
         - np.log((orders_vec - 1) / orders_vec)
     )
-    # print(rdp_budget)
+    
+    # MyPdb().set_trace()
 
-    return torch.tensor(rdp_budget).float().clamp(min=1e-5)
+    rdp_budget = torch.tensor(rdp_budget).float().clamp(min=1e-5)
+    print(rdp_budget)
+    return rdp_budget
 
 
 from opacus.accountants.analysis import rdp
@@ -455,7 +471,7 @@ def search_noise_mul_for_delta(epsilon, delta):
         noise_mul_lower=noise_mul/2
         noise_mul_upper=noise_mul
     else:
-        while cal_delta_gaussian_full(noise_mul, epsilon)> delta:
+        while cal_delta_gaussian_full(noise_mul, epsilon) < delta:
             noise_mul=noise_mul/2
 
         noise_mul_lower=noise_mul

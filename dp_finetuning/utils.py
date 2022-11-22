@@ -120,7 +120,7 @@ def parse_args():
     parser.add_argument(
         "--augmult",
         type=int,
-        default=0,
+        default=-1,
     )
     parser.add_argument(
         "--momentum",
@@ -128,15 +128,20 @@ def parse_args():
         default=0.9,
     )
     parser.add_argument(
-        "--workers",
-        type=int,
-        default=4,
+        "--sample_rate",
+        type=float,
+        default=0.0,
     )
     parser.add_argument(
-        "--do_vanilla",
+        "--workers",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--sched",
         action="store_true",
         default=False,
-        help="Do vanilla DPSGD instead of using the filter"
+        help="Use learning rate schedule"
     )
     parser.add_argument(
         "--mode",
@@ -146,6 +151,7 @@ def parse_args():
             "vanilla",
             "sampling",
         ],
+        default="vanilla",
         help="What mode of DPSGD optimization to use. Individual and Dpsgdfilter both use GDP filter."
     )
     args = parser.parse_args()
@@ -168,7 +174,7 @@ def dataset_with_indices(cls):
         '__getitem__': __getitem__,
     })
 
-def get_features(f, images, interp_size=224, batch=256):
+def get_features(f, images, interp_size=224, batch=64):
     features = []
     for img in tqdm(images.split(batch)):
         with torch.no_grad():
@@ -450,7 +456,47 @@ class FinetuneAugmultDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.targets)
 
+class SlantedTriangularLearningRate(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, 
+                  T,
+                  cut_frac,
+                  ratio,
+                  lr_max,
+                  last_epoch=-1):
+        self.cut = np.floor(T * cut_frac)
+        self.T = T
+        self.cut_frac = cut_frac
+        self.ratio = ratio
+        self.lr_max = lr_max
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch < self.cut:
+            p = self.last_epoch / self.cut
+        else:
+            print("LR should be decreasing")
+            p = 1 - (self.last_epoch - self.cut)/(self.cut * (1/(self.cut_frac - 1)))
+        return [self.lr_max * (1 + p * (self.ratio - 1))/self.ratio for lr in self.base_lrs]
+from collections import namedtuple
+class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
+    def __call__(self, t):
+        return np.interp([t], self.knots, self.vals)[0]
+
 if __name__ == "__main__":
     args = parse_args()
-    download_things(args)
-    get_ds(args)
+    model = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1, momentum=0.9, nesterov=False)
+    lr_schedule = PiecewiseLinear([0, 5, args.epochs],
+                                  [0.1, args.lr,                  0.1])
+    lambda_step = lambda step: lr_schedule(step)
+    sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_step)
+    sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
+                                                    max_lr = args.lr, 
+                                                    steps_per_epoch=1, 
+                                                    epochs=args.epochs,
+                                                    )
+    for _ in range(args.epochs):
+        print(sched.get_lr())
+        sched.step()
+    # download_things(args)
+    # get_ds(args)

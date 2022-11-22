@@ -404,7 +404,7 @@ class DPOptimizer(Optimizer):
         per_sample_clip_factor = (self.max_grad_norm / (per_sample_norms + 1e-6)).clamp(
             max=1.0
         )
-        # per_sample_clip_factor = per_sample_clip_factor / (self.max_grad_norm + 1e-6)
+        per_sample_clip_factor = per_sample_clip_factor / (self.max_grad_norm + 1e-6)
 
         for p in self.params:
             _check_processed_flag(p.grad_sample)
@@ -433,7 +433,7 @@ class DPOptimizer(Optimizer):
                 generator=self.generator,
                 secure_mode=self.secure_mode,
             )
-            p.summed_grad = p.summed_grad / self.base_grad_norm
+            # p.summed_grad = p.summed_grad / self.base_grad_norm
             print("GRAD NORM", p.summed_grad.norm())
             p.grad = (p.summed_grad + noise).view_as(p)
 
