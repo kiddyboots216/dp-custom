@@ -75,8 +75,9 @@ class SparsefluenceOptimizer(DPOptimizer):
         Stores clipped and aggregated gradients into `p.summed_grad```
         violations: 1 if ok to use this grad, else 0
         """
+        # MyPdb().set_trace()
         per_sample_norms = self.per_sample_norms
-        per_sample_clip_factor = (violations * self.max_grad_norm[indices] / (per_sample_norms + 1e-6)).clamp(
+        per_sample_clip_factor = ((1 - violations) * self.max_grad_norm[indices] / (per_sample_norms + 1e-6)).clamp(
                 max=1.0
         ) # if your max grad norm is 0, you are violated or not sampled
         # per_sample_clip_factor = per_sample_clip_factor / self.base_grad_norm

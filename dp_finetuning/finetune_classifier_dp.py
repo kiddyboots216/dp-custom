@@ -168,35 +168,39 @@ def main():
                                 model)
         model = nn.DataParallel(model)
     if args.standardize_weights:
-        nn.init.normal_(model.weight, mean=0.0, std=1.0/np.sqrt(num_features))
+        # nn.init.normal_(model.weight, mean=0.0, std=1.0/np.sqrt(num_features))
+        # nn.init.normal_(model.weight, mean=0.0, std=args.sigma)
+        model.weight.data.zero_()
+
+    # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, nesterov=False)
     privacy_engine = None
 
-    # if not args.disable_dp:
-    privacy_engine = PrivacyEngine(secure_mode=args.secure_rng,
-                                    accountant="gdp")
-    clipping_dict = {
-        "vanilla": "flat",
-        "individual": "budget",
-        "dpsgdfilter": "filter",
-        "sampling": "sampling",
-    }
-    clipping = clipping_dict[args.mode]
-    model, optimizer, train_loader = privacy_engine.make_private(
-        module=model,
-        optimizer=optimizer,
-        data_loader=train_loader,
-        noise_multiplier=args.sigma,
-        max_grad_norm=args.max_per_sample_grad_norm,
-        clipping=clipping,
-        epsilon=args.epsilon,
-        delta=args.delta,
-        poisson_sampling=True,
-        augmult=args.augmult,
-        expected_sample_rate=args.sample_rate,
-    )
-    if args.augmult > -1 or args.num_classes>10:
-        train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=10000, optimizer=optimizer)
+    if not args.disable_dp:
+        privacy_engine = PrivacyEngine(secure_mode=args.secure_rng,
+                                        accountant="gdp")
+        clipping_dict = {
+            "vanilla": "flat",
+            "individual": "budget",
+            "dpsgdfilter": "filter",
+            "sampling": "sampling",
+        }
+        clipping = clipping_dict[args.mode]
+        model, optimizer, train_loader = privacy_engine.make_private(
+            module=model,
+            optimizer=optimizer,
+            data_loader=train_loader,
+            noise_multiplier=args.sigma,
+            max_grad_norm=args.max_per_sample_grad_norm,
+            clipping=clipping,
+            epsilon=args.epsilon,
+            delta=args.delta,
+            poisson_sampling=True,
+            augmult=args.augmult,
+            expected_sample_rate=args.sample_rate,
+        )
+        if args.augmult > -1 or args.num_classes>10:
+            train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=10000, optimizer=optimizer)
 
     print("TRAIN LOADER LEN", len(train_loader))
     ### MAKE SOME AVERAGING UTILITES

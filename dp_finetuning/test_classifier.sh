@@ -33,6 +33,6 @@ python finetune_classifier_dp.py\
     --sigma ${5}\
     --epochs ${6}\
     --batch_size ${7}\
-    --sample_rate ${8}\
-    --mode ${9}\
+    --mode ${8}\
+    --arch ${9}\
     ${10}\

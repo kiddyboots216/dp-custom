@@ -35,8 +35,11 @@ def parse_args():
     )
     parser.add_argument(
         '--arch', 
-        default="beitv2_large_patch16_224_in22k", 
-        type=str
+        type=str,
+        choices=["beit_large_patch16_512",
+        "convnext_xlarge_384_in22ft1k",
+        "vit_large_patch16_384",
+        "beitv2_large_patch16_224_in22k",]
     )
     parser.add_argument(
         '--lr', 
@@ -156,6 +159,10 @@ def parse_args():
     )
     args = parser.parse_args()
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
+    if args.sigma == -1:
+        # let the prv acct determine sigma for us
+        from prv_accountant.dpsgd import find_noise_multiplier
+        args.sigma = find_noise_multiplier(args.epsilon, args.epochs, 1.0, args.delta, eps_error=0.001, mu_max=200)
     for arg in vars(args):
         print(' {} {}'.format(arg, getattr(args, arg) or ''))
     return args

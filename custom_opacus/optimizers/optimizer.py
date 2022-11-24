@@ -436,6 +436,7 @@ class DPOptimizer(Optimizer):
             # p.summed_grad = p.summed_grad / self.base_grad_norm
             print("GRAD NORM", p.summed_grad.norm())
             p.grad = (p.summed_grad + noise).view_as(p)
+            # p.grad = p.summed_grad
 
             _mark_as_processed(p.summed_grad)
 
