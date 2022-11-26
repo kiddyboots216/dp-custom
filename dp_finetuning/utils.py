@@ -162,7 +162,13 @@ def parse_args():
     if args.sigma == -1:
         # let the prv acct determine sigma for us
         from prv_accountant.dpsgd import find_noise_multiplier
-        args.sigma = find_noise_multiplier(args.epsilon, args.epochs, 1.0, args.delta, eps_error=0.001, mu_max=200)
+        args.sigma = find_noise_multiplier(
+            sampling_probability=1.0,
+            num_steps=args.epochs,
+            target_epsilon=args.epsilon,
+            target_delta=args.delta,
+            eps_error=0.001,
+            mu_max=400)
     for arg in vars(args):
         print(' {} {}'.format(arg, getattr(args, arg) or ''))
     return args
@@ -193,6 +199,8 @@ def download_things(args):
     dataset_path = args.dataset_path
     if args.dataset in ["SVHN", "STL10"]:
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='train', download=True)
+    elif args.dataset in ["EMNIST"]:
+        ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='byclass', download=True)
     else:
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
@@ -491,19 +499,5 @@ class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
 
 if __name__ == "__main__":
     args = parse_args()
-    model = nn.Linear(1, 1)
-    optimizer = torch.optim.SGD(model.parameters(), lr=1, momentum=0.9, nesterov=False)
-    lr_schedule = PiecewiseLinear([0, 5, args.epochs],
-                                  [0.1, args.lr,                  0.1])
-    lambda_step = lambda step: lr_schedule(step)
-    sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_step)
-    sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
-                                                    max_lr = args.lr, 
-                                                    steps_per_epoch=1, 
-                                                    epochs=args.epochs,
-                                                    )
-    for _ in range(args.epochs):
-        print(sched.get_lr())
-        sched.step()
-    # download_things(args)
-    # get_ds(args)
+    download_things(args)
+    get_ds(args)
