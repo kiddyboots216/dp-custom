@@ -25,6 +25,13 @@ DATASET_TO_CLASSES = {
             'MNIST': 10,
             'STL10': 10,
             'SVHN': 10}
+DATASET_TO_SIZE = {
+    'CIFAR10': 50000,
+    'CIFAR100': 50000,
+    'STL10': 5000,
+    'FashionMNIST': 60000,
+    'EMNIST': 697932
+ }
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch DP Finetuning')
     parser.add_argument(
@@ -76,7 +83,12 @@ def parse_args():
         "--standardize_weights",
         action="store_true",
         default=False,
-        help="Initialize weights to Normal(0, 1/sqrt(fan_in)) to make the initialization more Gaussian"
+        help="Initialize weights to zero to make the initialization more Gaussian"
+    )
+    parser.add_argument(
+        "--weight_decay", 
+        default=0, 
+        type=float
     )
     parser.add_argument(
         "--secure_rng",
@@ -157,18 +169,33 @@ def parse_args():
         default="vanilla",
         help="What mode of DPSGD optimization to use. Individual and Dpsgdfilter both use GDP filter."
     )
+    # parser.add_argument(
+    #     "--weight_avg_mode",
+    #     choices=[
+    #         "none",
+    #         "ema",
+    #         "swa",
+    #         "best",
+    #     ],
+    #     default="best",
+    #     help="What kind of weight averaging to use",
+    # )
     args = parser.parse_args()
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
     if args.sigma == -1:
         # let the prv acct determine sigma for us
         from prv_accountant.dpsgd import find_noise_multiplier
+        if args.batch_size == -1:
+            sampling_probability = 1.0
+        else:
+            sampling_probability = args.batch_size/DATASET_TO_SIZE[args.dataset]
         args.sigma = find_noise_multiplier(
-            sampling_probability=1.0,
-            num_steps=args.epochs,
+            sampling_probability=sampling_probability,
+            num_steps=int(args.epochs/sampling_probability),
             target_epsilon=args.epsilon,
             target_delta=args.delta,
             eps_error=0.001,
-            mu_max=400)
+            mu_max=5000)
     for arg in vars(args):
         print(' {} {}'.format(arg, getattr(args, arg) or ''))
     return args

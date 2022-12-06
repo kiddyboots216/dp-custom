@@ -126,6 +126,7 @@ def best_correct(test_stats):
 def print_test_stats(test_stats):
     for key, val in test_stats.items():
         print(f"Test Set: {key} : {val:.4f}")
+        # wandb.log({key: val})
 
 def test(args, model_dict, device, test_loader):
     model_dict = get_classifier(args, model_dict)
@@ -174,6 +175,7 @@ def main():
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, nesterov=False)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     privacy_engine = None
 
     if not args.disable_dp:
@@ -199,8 +201,8 @@ def main():
             augmult=args.augmult,
             expected_sample_rate=args.sample_rate,
         )
-        if args.augmult > -1 or args.num_classes>10:
-            train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=10000, optimizer=optimizer)
+        # if args.augmult > -1 or args.num_classes>10:
+        train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=5000, optimizer=optimizer)
 
     print("TRAIN LOADER LEN", len(train_loader))
     ### MAKE SOME AVERAGING UTILITES
