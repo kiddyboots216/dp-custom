@@ -16,7 +16,12 @@ from opacus import PrivacyEngine
 from opacus.utils.batch_memory_manager import wrap_data_loader
 
 from utils import parse_args, dataset_with_indices, extract_features, get_ds, DATASET_TO_CLASSES, PiecewiseLinear
+import pdb
+import code
 
+class MyPdb(pdb.Pdb):
+    def do_interact(self, arg):
+        code.interact("*interactive*", local=self.curframe_locals)
 args = None
 len_test = None
 g_weight_cache = None
@@ -117,6 +122,8 @@ def weights_to_grads(weight_cache):
     """
     Takes buffer of size (n_models, model_size) and turns it into a buffer of size (n_grads = n_models-1, model_size)
     """
+    print(f"LIST OF WEIGHT NORMS {torch.norm(weight_cache, dim=1)}")
+    # MyPdb().set_trace()
     grad_cache = weight_cache[1:, :] - weight_cache[:1, :]
     return grad_cache
 
@@ -172,9 +179,11 @@ def main():
         # nn.init.normal_(model.weight, mean=0.0, std=1.0/np.sqrt(num_features))
         # nn.init.normal_(model.weight, mean=0.0, std=args.sigma)
         model.weight.data.zero_()
+        # model.bias.data.zero_()
+        # model.bias.data.add_(-10.)
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, nesterov=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=False)
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     privacy_engine = None
 
@@ -195,11 +204,11 @@ def main():
             noise_multiplier=args.sigma,
             max_grad_norm=args.max_per_sample_grad_norm,
             clipping=clipping,
-            epsilon=args.epsilon,
+            # epsilon=args.epsilon,
             delta=args.delta,
             poisson_sampling=True,
-            augmult=args.augmult,
-            expected_sample_rate=args.sample_rate,
+            # augmult=args.augmult,
+            # expected_sample_rate=args.sample_rate,
         )
         # if args.augmult > -1 or args.num_classes>10:
         train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=5000, optimizer=optimizer)
@@ -234,12 +243,7 @@ def main():
     #         "ema": ema_model,
     #         "swa": swa_model,
     #     }, args.device, test_loader)) # ensure we can test
-    import pdb
-    import code
 
-    class MyPdb(pdb.Pdb):
-        def do_interact(self, arg):
-            code.interact("*interactive*", local=self.curframe_locals)
     # MyPdb().set_trace()
     # reference = model._module.weight
     # noise = torch.normal(
@@ -281,6 +285,13 @@ def main():
             "swa": swa_model,
         }, args.epochs + 1)
     grad_cache = weights_to_grads(g_weight_cache)
+    # print("VERIFYING THAT CHANGING THE WEIGHTS BY CONSTANT FACTOR DOES NOT CHANGE TEST ACC")
+    # model._module.weight.data.zero_()
+    # model._module.weight.data.add_(grad_cache[-1].reshape(model._module.weight.data.shape).cuda() * 0.01)
+    # test(args, {
+    #         "model": model,
+    #     }, 
+    # args.device, test_loader)
     print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
     for _ in range(10):
         momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
@@ -294,7 +305,7 @@ def main():
     
     best_acc = max(corrects)
     print(f"Best overall accuracy {best_acc:.2f}")
-    if args.disable_dp:
+    if args.disable_dp or args.sigma==0:
         wandb.log({"best_acc": best_acc})
     elif args.mode in ["vanilla"]:
         wandb.log({"best_acc": best_acc,

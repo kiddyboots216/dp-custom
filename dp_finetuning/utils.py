@@ -46,6 +46,7 @@ def parse_args():
         choices=["beit_large_patch16_512",
         "convnext_xlarge_384_in22ft1k",
         "vit_large_patch16_384",
+        "vit_base_patch16_384",
         "beitv2_large_patch16_224_in22k",]
     )
     parser.add_argument(
@@ -65,7 +66,7 @@ def parse_args():
     )
     parser.add_argument(
         '--sigma', 
-        default=10.0, 
+        default=-1, 
         type=float
     )
     parser.add_argument(
@@ -81,9 +82,9 @@ def parse_args():
     )
     parser.add_argument(
         "--standardize_weights",
-        action="store_true",
-        default=False,
-        help="Initialize weights to zero to make the initialization more Gaussian"
+        action="store_false",
+        default=True,
+        help="Initialize weights to zero to make the initialization better"
     )
     parser.add_argument(
         "--weight_decay", 
@@ -130,7 +131,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_path",
         type=str,
-        default="/scratch/gpfs/ashwinee/datasets/",
+        default="/data/nvme/ashwinee/datasets/",
     )
     parser.add_argument(
         "--augmult",
@@ -183,19 +184,22 @@ def parse_args():
     args = parser.parse_args()
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
     if args.sigma == -1:
-        # let the prv acct determine sigma for us
-        from prv_accountant.dpsgd import find_noise_multiplier
-        if args.batch_size == -1:
-            sampling_probability = 1.0
+        if args.epsilon == 0.0:
+            args.sigma = 0
         else:
-            sampling_probability = args.batch_size/DATASET_TO_SIZE[args.dataset]
-        args.sigma = find_noise_multiplier(
-            sampling_probability=sampling_probability,
-            num_steps=int(args.epochs/sampling_probability),
-            target_epsilon=args.epsilon,
-            target_delta=args.delta,
-            eps_error=0.001,
-            mu_max=5000)
+            # let the prv acct determine sigma for us
+            from prv_accountant.dpsgd import find_noise_multiplier
+            if args.batch_size == -1:
+                sampling_probability = 1.0
+            else:
+                sampling_probability = args.batch_size/DATASET_TO_SIZE[args.dataset]
+            args.sigma = find_noise_multiplier(
+                sampling_probability=sampling_probability,
+                num_steps=int(args.epochs/sampling_probability),
+                target_epsilon=args.epsilon,
+                target_delta=args.delta,
+                eps_error=0.001,
+                mu_max=5000)
     for arg in vars(args):
         print(' {} {}'.format(arg, getattr(args, arg) or ''))
     return args
@@ -258,6 +262,7 @@ def extract_features(args, images_train, images_test):
         "beit_large_patch16_512": 512,
         "convnext_xlarge_384_in22ft1k": 384,
         "vit_large_patch16_384": 384,
+        "vit_base_patch16_384": 384,
         "tf_efficientnet_l2_ns": 800,
     }
     ARCH_TO_INTERP_SIZE.update(archs_to_interp_sizes)
@@ -527,4 +532,5 @@ class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
 if __name__ == "__main__":
     args = parse_args()
     download_things(args)
-    get_ds(args)
+    train_loader, test_loader, num_features, len_test = get_ds(args)
+    print("N FEATURES", num_features)
