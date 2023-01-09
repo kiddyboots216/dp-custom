@@ -110,22 +110,23 @@ def store_weights(args, model_dict, epoch):
     """
     Store weights of model
     """
-    global g_weight_cache
+    # global g_weight_cache
     model_dict = get_classifier(args, model_dict)
     for key, val in model_dict.items():
         model_dict[key] = val.weight.detach().cpu()
-    if g_weight_cache is None:
-        g_weight_cache = torch.zeros(args.epochs+1, model_dict["model"].shape.numel()) # assumes sample_rate = 1
-    g_weight_cache[epoch-1, :] = model_dict["model"].flatten()
+    # if g_weight_cache is None:
+        # g_weight_cache = torch.zeros(args.epochs+1, model_dict["model"].shape.numel()) # assumes sample_rate = 1
+    # g_weight_cache[epoch-1, :] = model_dict["model"].flatten()
+    return model_dict["model"].flatten()
     
-def weights_to_grads(weight_cache):
-    """
-    Takes buffer of size (n_models, model_size) and turns it into a buffer of size (n_grads = n_models-1, model_size)
-    """
-    print(f"LIST OF WEIGHT NORMS {torch.norm(weight_cache, dim=1)}")
-    # MyPdb().set_trace()
-    grad_cache = weight_cache[1:, :] - weight_cache[:1, :]
-    return grad_cache
+# def weights_to_grads(weight_cache):
+#     """
+#     Takes buffer of size (n_models, model_size) and turns it into a buffer of size (n_grads = n_models-1, model_size)
+#     """
+#     print(f"LIST OF WEIGHT NORMS {torch.norm(weight_cache, dim=1)}")
+#     # MyPdb().set_trace()
+#     grad_cache = weight_cache[1:, :] - weight_cache[:1, :]
+#     return grad_cache
 
 def best_correct(test_stats):
     return max([test_stats[i] for i in test_stats if "_acc" in i]) 
@@ -147,21 +148,12 @@ def test(args, model_dict, device, test_loader):
     print_test_stats(test_stats)
     return best_correct(test_stats)
 
-def main():
-    ### ARGS
-    global args
-    global len_test
+def set_all_seeds(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed(seed)
 
-    args = parse_args()
-
-    ### SET SEEDS
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-
-    ### EITHER FETCH EXTRACTED FEATURES OR EXTRACT FEATURES AND STORE THEM, THEN MAKE DATASET
-    train_loader, test_loader, num_features, len_test = get_ds(args)
-
+def setup_all():
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
     model = nn.Linear(num_features, args.num_classes, bias=False).cuda()
     if args.augmult > -1:
@@ -176,11 +168,7 @@ def main():
                                 model)
         model = nn.DataParallel(model)
     if args.standardize_weights:
-        # nn.init.normal_(model.weight, mean=0.0, std=1.0/np.sqrt(num_features))
-        # nn.init.normal_(model.weight, mean=0.0, std=args.sigma)
         model.weight.data.zero_()
-        # model.bias.data.zero_()
-        # model.bias.data.add_(-10.)
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum, nesterov=False)
@@ -204,87 +192,73 @@ def main():
             noise_multiplier=args.sigma,
             max_grad_norm=args.max_per_sample_grad_norm,
             clipping=clipping,
-            # epsilon=args.epsilon,
             delta=args.delta,
             poisson_sampling=True,
-            # augmult=args.augmult,
-            # expected_sample_rate=args.sample_rate,
         )
-        # if args.augmult > -1 or args.num_classes>10:
-        train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=5000, optimizer=optimizer)
-
-    print("TRAIN LOADER LEN", len(train_loader))
-    ### MAKE SOME AVERAGING UTILITES
+        if args.augmult > -1 or args.num_classes>10:
+            train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=5000, optimizer=optimizer)
 
     swa_model = AveragedModel(model)
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
     ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
-    sched = None
-    if args.sched:
-        # lr_schedule = PiecewiseLinear([0, 10, args.epochs],
-        #                           [0.1, args.lr,                  0.1])
-        # lambda_step = lambda step: lr_schedule(step)
-        # sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_step)
-        sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
-                                                    max_lr = args.lr, 
-                                                    steps_per_epoch=len(train_loader), 
-                                                    epochs=int(1 * args.epochs),
-                                                    )
-    ### WANDB - COMMENT OUT IF YOU DON'T WANT TO USE WANDB
+    return model, ema_model, swa_model, optimizer, privacy_engine, sched
 
-    wandb.init(project="baselines", 
-        entity="dp-finetuning")
-    wandb.config.update(args)
+def binary_search(initial_guess, min_val, max_val, num_tries=10):
+    # do a binary search over values of r starting from the initial guess to find the value that gives the best accuracy
+    best_r_so_far = initial_guess
+    next_r = initial_guess
+    best_acc_so_far = 0
+    for i in range(num_tries):
+        hparams = get_hparams(next_r)
+        result = train_and_test(hparams)
+        if result["test_acc"] > best_acc_so_far:
+            best_acc_so_far = result["test_acc"]
+            best_r_so_far = next_r
 
-    ### DO TRAINING
-    corrects = []
-    # corrects.append(test(args, {
-    #         "model": model,
-    #         "ema": ema_model,
-    #         "swa": swa_model,
-    #     }, args.device, test_loader)) # ensure we can test
+def extract_grads_weights(model, raw_grads, noisy_grads, weights):
+    raw_grad = layer.
+    raw_grads.append(raw_grad)
+    noisy_grads.append(noisy_grad)
+    weights.append(weight)
 
-    # MyPdb().set_trace()
-    # reference = model._module.weight
-    # noise = torch.normal(
-    #     mean=0,
-    #     std=args.sigma,
-    #     size=reference.shape,
-    #     device=reference.device,
-    #     generator=generator,
-    # )
+def do_training(model, ema_model, optimizer, privacy_engine, sched)
+    raw_grads, noisy_grads, weights = [], []
     for epoch in range(1, args.epochs + 1):
-        store_weights(args, {
-            "model": model,
-            "ema": ema_model,
-            "swa": swa_model,
-        }, epoch)
         if sched is not None:
             sched.step()
             wandb.log({"lr" : sched.get_lr()})
         train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)   
-        new_correct = test(args, {
-            "model": model,
-            "ema": ema_model,
-            "swa": swa_model,
-        }, 
-        args.device, test_loader)
+        raw_grads, noisy_grads, weights = extract_grads_weights(model)
+        new_correct = test(args, {"model": model,"ema": ema_model,}, args.device, test_loader)
         corrects.append(new_correct)
         wandb.log({"test_acc": new_correct})
-        # update ema / swa
         ema_model.update_parameters(model)
-        if (len(corrects) > 10 and (abs(corrects[-1] - corrects[-2]) < 1)): # model is converging, let's start doing SWA
-            swa_model.update_parameters(model)
-        # if args.do_vanilla:
-        #     epsilon_reported = privacy_engine.accountant.get_epsilon(delta=1e-5)
-        #     if epsilon_reported >= args.epsilon:
-        #         break
-    store_weights(args, {
-            "model": model,
-            "ema": ema_model,
-            "swa": swa_model,
-        }, args.epochs + 1)
-    grad_cache = weights_to_grads(g_weight_cache)
+    return torch.stack(weights)
+
+def main():
+    global args
+    global len_test
+    args = parse_args()
+    train_loader, test_loader, num_features, len_test = get_ds(args)
+    wandb.init(project="baselines", 
+        entity="dp-finetuning")
+    wandb.config.update(args)
+    grads, weights = [], []
+    best_accs = []
+    for num_run in range(args.num_runs):
+        set_all_seeds(args.seed + num_run)
+        model, ema_model, optimizer, privacy_engine, sched = setup_all()
+        run_weights = do_training(model, ema_model, optimizer, privacy_engine, sched)
+        grad_cache = weights_to_grads(run_weights)
+        grads.append(torch.stack(grad_cache))
+        weights.append(torch.stack(g_weight_cache))
+        g_weight_cache = []
+        best_accs.append(max(corrects))
+    if args.store_grads:
+        grads, weights = torch.stack(grads), torch.stack(weights)
+        np.savez(f"grad_datasets/{args.arch}/{args.dataset}/grads_weights_{args.num_runs}_{args.epochs}_{args.lr}.npz", 
+                grad=grads.numpy(), weight=weights.numpy())
+    
     # print("VERIFYING THAT CHANGING THE WEIGHTS BY CONSTANT FACTOR DOES NOT CHANGE TEST ACC")
     # model._module.weight.data.zero_()
     # model._module.weight.data.add_(grad_cache[-1].reshape(model._module.weight.data.shape).cuda() * 0.01)
@@ -292,23 +266,24 @@ def main():
     #         "model": model,
     #     }, 
     # args.device, test_loader)
-    print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
-    for _ in range(10):
-        momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
-        model._module.weight.data.add_(momentum_buffer, alpha=-1) # hardcode fake iterations
-        optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer'].mul_(args.momentum).add_(momentum_buffer)
-        new_correct = test(args, {
-            "model": model,
-        }, 
-        args.device, test_loader)
-        corrects.append(new_correct)
+    # print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
+    # momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
+    # model._module.weight.data.add_(momentum_buffer, alpha=(-1. * args.lr)) # hardcode fake iterations
+    # optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer'].mul_(args.momentum).add_(momentum_buffer)
+    # new_correct = test(args, {
+    #     "model": model,
+    # }, 
+    # args.device, test_loader)
+    # corrects.append(new_correct)
     
-    best_acc = max(corrects)
+    best_acc = np.mean(best_accs)
     print(f"Best overall accuracy {best_acc:.2f}")
+    best_acc_std = np.std(best_accs)
     if args.disable_dp or args.sigma==0:
-        wandb.log({"best_acc": best_acc})
+        wandb.log({"best_acc": best_acc, "best_acc_std": best_acc_std})
     elif args.mode in ["vanilla"]:
         wandb.log({"best_acc": best_acc,
+                   "best_acc_std": best_acc_std,
                 "epsilon": privacy_engine.accountant.get_epsilon(delta=1e-5)})
     elif args.mode in ["individual", "dpsgdfilter"]:
         wandb.log({"best_acc": best_acc,

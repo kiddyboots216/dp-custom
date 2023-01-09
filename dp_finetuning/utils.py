@@ -24,7 +24,11 @@ DATASET_TO_CLASSES = {
             'FashionMNIST': 10,
             'MNIST': 10,
             'STL10': 10,
-            'SVHN': 10}
+            'SVHN': 10,
+            'waterbirds': 2,
+            'fmow': 62,
+            'camelyon17': 2,
+            'iwildcam': 186}
 DATASET_TO_SIZE = {
     'CIFAR10': 50000,
     'CIFAR100': 50000,
@@ -119,11 +123,6 @@ def parse_args():
         default=11297,
     )
     parser.add_argument(
-        "--num_runs",
-        type=int,
-        default=1
-    )
-    parser.add_argument(
         "--device",
         type=str,
         default="cuda:0"
@@ -169,6 +168,12 @@ def parse_args():
         ],
         default="vanilla",
         help="What mode of DPSGD optimization to use. Individual and Dpsgdfilter both use GDP filter."
+    )
+    parser.add_argument(
+        "--num_runs",
+        type=int,
+        default=1,
+        help="How many runs to generate "
     )
     # parser.add_argument(
     #     "--weight_avg_mode",
@@ -531,6 +536,6 @@ class PiecewiseLinear(namedtuple('PiecewiseLinear', ('knots', 'vals'))):
 
 if __name__ == "__main__":
     args = parse_args()
-    download_things(args)
+    # download_things(args)
     train_loader, test_loader, num_features, len_test = get_ds(args)
     print("N FEATURES", num_features)
