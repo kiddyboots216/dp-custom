@@ -81,7 +81,7 @@ def do_test(model_dict, data, target, criterion, test_stats):
         test_stats[key + "_acc"] += pred.eq(target.view_as(pred)).sum().item() * 100/len_test
     return test_stats
 
-def get_classifier(args, model_dict):
+def get_classifier(model_dict):
     """
     this is a catastrophe
     """
@@ -111,7 +111,7 @@ def store_weights(args, model_dict, epoch):
     Store weights of model
     """
     # global g_weight_cache
-    model_dict = get_classifier(args, model_dict)
+    model_dict = get_classifier(model_dict)
     for key, val in model_dict.items():
         model_dict[key] = val.weight.detach().cpu()
     # if g_weight_cache is None:
@@ -137,12 +137,12 @@ def print_test_stats(test_stats):
         # wandb.log({key: val})
 
 def test(args, model_dict, device, test_loader):
-    model_dict = get_classifier(args, model_dict)
+    model_dict = get_classifier(model_dict)
     test_stats = {key + "_loss": 0 for key in model_dict.keys()}
     test_stats.update({key + "_acc": 0 for key in model_dict.keys()})
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
-        for data, target, _ in tqdm(test_loader):
+        for data, target in tqdm(test_loader):
             data, target = data.to(device), target.to(device)
             test_stats = do_test(model_dict, data, target, criterion, test_stats)
     print_test_stats(test_stats)
@@ -153,7 +153,7 @@ def set_all_seeds(seed):
     np.random.seed(seed)
     torch.cuda.manual_seed(seed)
 
-def setup_all():
+def setup_all(train_loader, test_loader, num_features, len_test):
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
     model = nn.Linear(num_features, args.num_classes, bias=False).cuda()
     if args.augmult > -1:
@@ -198,10 +198,11 @@ def setup_all():
         if args.augmult > -1 or args.num_classes>10:
             train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=5000, optimizer=optimizer)
 
-    swa_model = AveragedModel(model)
+    sched = None
+    # swa_model = AveragedModel(model)
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
     ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
-    return model, ema_model, swa_model, optimizer, privacy_engine, sched
+    return model, ema_model, optimizer, privacy_engine, sched
 
 def binary_search(initial_guess, min_val, max_val, num_tries=10):
     # do a binary search over values of r starting from the initial guess to find the value that gives the best accuracy
@@ -216,24 +217,42 @@ def binary_search(initial_guess, min_val, max_val, num_tries=10):
             best_r_so_far = next_r
 
 def extract_grads_weights(model, raw_grads, noisy_grads, weights):
-    raw_grad = layer.
+    """
+    This function extracts the noisy grad, raw grad and weight from the model
+    """
+    raw_model = get_classifier({"model": model})["model"] # get_classifier gets back the original model, unwraps it
+    raw_grad = raw_model.weight.summed_grad
+    noisy_grad = raw_model.weight.grad # p.grad = p.summed_grad + noise
+    weight = raw_model.weight.data
     raw_grads.append(raw_grad)
     noisy_grads.append(noisy_grad)
     weights.append(weight)
+    return raw_grads, noisy_grads, weights
 
-def do_training(model, ema_model, optimizer, privacy_engine, sched)
-    raw_grads, noisy_grads, weights = [], []
+def do_training(model, ema_model, train_loader, test_loader, optimizer, privacy_engine, sched):
+    raw_grads, noisy_grads, weights, corrects = [], [], [], []
     for epoch in range(1, args.epochs + 1):
         if sched is not None:
             sched.step()
             wandb.log({"lr" : sched.get_lr()})
         train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)   
-        raw_grads, noisy_grads, weights = extract_grads_weights(model)
+        raw_grads, noisy_grads, weights = extract_grads_weights(model, raw_grads, noisy_grads, weights)
         new_correct = test(args, {"model": model,"ema": ema_model,}, args.device, test_loader)
         corrects.append(new_correct)
         wandb.log({"test_acc": new_correct})
         ema_model.update_parameters(model)
-    return torch.stack(weights)
+    return torch.stack(raw_grads), torch.stack(noisy_grads), torch.stack(weights), corrects
+
+def store_grads(all_noisy_grads, all_raw_grads, all_weights):
+    if args.store_grads:
+        all_noisy_grads, all_raw_grads, all_weights = torch.stack(all_noisy_grads), torch.stack(all_raw_grads), torch.stack(all_weights)
+        f_dir = f"grad_datasets/{args.arch}/{args.dataset}"
+        f_path = f"/grads_weights_{args.num_runs}_{args.epochs}_{int(args.lr)}_{int(args.epsilon)}"
+        f_ext = ".npz"
+        os.makedirs(f_dir, exist_ok=True)
+        f_loc = f_dir + f_path + f_ext
+        np.savez(f_loc, noisy_grads=all_noisy_grads.cpu().numpy(), raw_grads=all_raw_grads.cpu().numpy(), weights=all_weights.cpu().numpy())
+        print(f"Saved grads to {f_loc}")
 
 def main():
     global args
@@ -243,29 +262,20 @@ def main():
     wandb.init(project="baselines", 
         entity="dp-finetuning")
     wandb.config.update(args)
-    grads, weights = [], []
+    all_noisy_grads, all_raw_grads, all_weights, all_corrects = [], [], [], []
     best_accs = []
     for num_run in range(args.num_runs):
         set_all_seeds(args.seed + num_run)
-        model, ema_model, optimizer, privacy_engine, sched = setup_all()
-        run_weights = do_training(model, ema_model, optimizer, privacy_engine, sched)
-        grad_cache = weights_to_grads(run_weights)
-        grads.append(torch.stack(grad_cache))
-        weights.append(torch.stack(g_weight_cache))
-        g_weight_cache = []
+        model, ema_model, optimizer, privacy_engine, sched = setup_all(train_loader, test_loader, num_features, len_test)
+        raw_grads, noisy_grads, weights, corrects = do_training(model, ema_model, train_loader, test_loader, optimizer, privacy_engine, sched)
+        all_noisy_grads.append(noisy_grads)
+        all_raw_grads.append(raw_grads)
+        all_weights.append(weights)
+        all_corrects.append(corrects)
         best_accs.append(max(corrects))
-    if args.store_grads:
-        grads, weights = torch.stack(grads), torch.stack(weights)
-        np.savez(f"grad_datasets/{args.arch}/{args.dataset}/grads_weights_{args.num_runs}_{args.epochs}_{args.lr}.npz", 
-                grad=grads.numpy(), weight=weights.numpy())
-    
-    # print("VERIFYING THAT CHANGING THE WEIGHTS BY CONSTANT FACTOR DOES NOT CHANGE TEST ACC")
-    # model._module.weight.data.zero_()
-    # model._module.weight.data.add_(grad_cache[-1].reshape(model._module.weight.data.shape).cuda() * 0.01)
-    # test(args, {
-    #         "model": model,
-    #     }, 
-    # args.device, test_loader)
+    store_grads(all_noisy_grads, all_raw_grads, all_weights)
+
+
     # print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
     # momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
     # model._module.weight.data.add_(momentum_buffer, alpha=(-1. * args.lr)) # hardcode fake iterations
@@ -279,18 +289,16 @@ def main():
     best_acc = np.mean(best_accs)
     print(f"Best overall accuracy {best_acc:.2f}")
     best_acc_std = np.std(best_accs)
-    if args.disable_dp or args.sigma==0:
-        wandb.log({"best_acc": best_acc, "best_acc_std": best_acc_std})
-    elif args.mode in ["vanilla"]:
-        wandb.log({"best_acc": best_acc,
-                   "best_acc_std": best_acc_std,
-                "epsilon": privacy_engine.accountant.get_epsilon(delta=1e-5)})
+    wandb_dict = {"best_acc": best_acc, "best_acc_std": best_acc_std}
+    logged_epsilon = None
+    if args.mode in ["vanilla"]:
+        logged_epsilon = privacy_engine.accountant.get_epsilon(delta=1e-5)
     elif args.mode in ["individual", "dpsgdfilter"]:
-        wandb.log({"best_acc": best_acc,
-                "epsilon": args.epsilon * privacy_engine.accountant.privacy_usage.max()})
+        logged_epsilon = args.epsilon * privacy_engine.accountant.privacy_usage.max()
     elif args.mode in ["sampling"]:
-        wandb.log({"best_acc": best_acc,
-                   "epsilon": privacy_engine.accountant.privacy_usage})
-
+        logged_epsilon = privacy_engine.accountant.privacy_usage
+    wandb_dict.update({"epsilon": logged_epsilon})
+    wandb.log(wandb_dict)
+    
 if __name__ == "__main__":
     main()

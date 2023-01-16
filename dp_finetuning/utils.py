@@ -13,6 +13,8 @@ from tqdm import tqdm
 import pdb
 import code
 
+from stl_cifar_style import STL10 as STL10_CIFAR
+
 class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
         code.interact("*interactive*", local=self.curframe_locals)
@@ -29,13 +31,23 @@ DATASET_TO_CLASSES = {
             'fmow': 62,
             'camelyon17': 2,
             'iwildcam': 186}
+TRANSFER_DATASETS_TO_CLASSES = {
+    'STL10_CIFAR': 10,
+    'CIFAR10': 10,
+    'STL10': 10,
+}
 DATASET_TO_SIZE = {
     'CIFAR10': 50000,
-    'CIFAR100': 50000,
+    'CIFAR100': 50000,  
     'STL10': 5000,
     'FashionMNIST': 60000,
     'EMNIST': 697932
  }
+ARCH_TO_NUM_FEATURES = {
+    "beitv2_large_patch16_224_in22k": 1024,
+    "beit_large_patch16_512":       1024,
+    "convnext_xlarge_384_in22ft1k": 2048,
+}
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch DP Finetuning')
     parser.add_argument(
@@ -43,6 +55,12 @@ def parse_args():
         default='CIFAR10', 
         type=str,                
         choices=list(DATASET_TO_CLASSES.keys())
+    )
+    parser.add_argument(
+        '--transfer_dataset',
+        default='STL10_CIFAR',
+        type=str,
+        choices=list(TRANSFER_DATASETS_TO_CLASSES.keys())
     )
     parser.add_argument(
         '--arch', 
@@ -175,6 +193,12 @@ def parse_args():
         default=1,
         help="How many runs to generate "
     )
+    parser.add_argument(
+        "--store_grads",
+        action="store_true",
+        default=False,
+        help="Store gradients for each epoch"
+    )
     # parser.add_argument(
     #     "--weight_avg_mode",
     #     choices=[
@@ -242,12 +266,6 @@ def download_things(args):
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
 
 def extract_features(args, images_train, images_test):
-
-    ### SET SEEDS
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-
     ### GET DATA
     dataset_path = args.dataset_path + args.dataset
 
@@ -287,7 +305,25 @@ def get_ds(args):
 
     if not os.path.exists(dataset_path):
         raise Exception('We cannot download a dataset/model here \n Run python utils.py to download things')
-    if args.dataset in ["SVHN", "STL10"]:
+    if args.dataset in ["STL10_CIFAR"]:
+        print("Loading STL10_CIFAR")
+        STL_CIFAR_dataset = STL10_CIFAR(
+            root = "/data/nvme/ashwinee/datasets",
+            split = "test",
+            folds = None,
+            transform = None,
+            target_transform = None,
+            download = False)
+        images_test = torch.tensor(STL_CIFAR_dataset.data) / 255.0
+        labels_test = torch.tensor(STL_CIFAR_dataset.labels)
+        if not os.path.exists(extracted_path):
+            extract_features(args, images_test, images_test) # don't want to extract train features
+        x_test = np.load(extracted_test_path)
+        features_test = torch.from_numpy(x_test)
+        ds_test = TensorDataset(features_test, labels_test)
+        test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
+        return None, test_loader, None, None # no train loader
+    elif args.dataset in ["SVHN", "STL10"]:
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='train')
         images_train, labels_train = torch.tensor(ds.data) / 255.0, torch.tensor(ds.labels)
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), split='test')
@@ -325,7 +361,7 @@ def get_ds(args):
         train_loader = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, **kwargs)
     x_test = np.load(extracted_test_path)
     features_test = torch.from_numpy(x_test)
-    ds_test = dataset_with_indices(TensorDataset)(features_test, labels_test)
+    ds_test = TensorDataset(features_test, labels_test)
     test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False, **kwargs)
     return train_loader, test_loader, features_test.shape[-1], len(labels_test)
 
