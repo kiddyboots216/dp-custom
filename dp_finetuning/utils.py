@@ -328,7 +328,7 @@ def get_ds(args):
     if args.dataset in ["STL10_CIFAR"]:
         print("Loading STL10_CIFAR")
         STL_CIFAR_dataset = STL10_CIFAR(
-            root = "/data/nvme/ashwinee/datasets",
+            root = "/data/nvme/$USER/datasets",
             split = "test",
             folds = None,
             transform = None,
@@ -346,7 +346,7 @@ def get_ds(args):
     elif args.dataset in ["CIFAR10p1"]:
         print("Loading CIFAR10p1")
         CIFAR10p1_dataset = CIFAR10p1(
-            root = "/home/ashwinee/CIFAR-10.1/datasets/", # download from https://github.com/modestyachts/CIFAR-10.1
+            root = "/home/$USER/CIFAR-10.1/datasets/", # download from https://github.com/modestyachts/CIFAR-10.1
             split = "test",
             transform = None)
         images_test = torch.tensor(CIFAR10p1_dataset._imagedata.transpose(0, 3, 1, 2)) / 255.0
@@ -360,7 +360,7 @@ def get_ds(args):
         return None, test_loader, None, None # no train loader
     elif args.dataset in ["CIFAR10C"]:
         print("Loading CIFAR10C")
-        CIFAR10C_dataset = CIFAR10C(root="/data/nvme/ashwinee/datasets/CIFAR10C", 
+        CIFAR10C_dataset = CIFAR10C(root="/data/nvme/$USER/datasets/CIFAR10C", 
                             corruption="gaussian_noise", 
                             severity=2, 
                             transform=None)
@@ -376,7 +376,7 @@ def get_ds(args):
         return None, test_loader, None, None # no train loader
     elif args.dataset in ["CIFAR100C"]:
         print("Loading CIFAR100C")
-        CIFAR100C_dataset = CIFAR10C(root="/data/nvme/ashwinee/datasets/CIFAR100C", 
+        CIFAR100C_dataset = CIFAR10C(root="/data/nvme/$USER/datasets/CIFAR100C", 
                             corruption="gaussian_noise", 
                             severity=2, 
                             transform=None)
