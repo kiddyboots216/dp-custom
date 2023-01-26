@@ -36,13 +36,26 @@ def load_grads_weights(args):
     weights = loaded_arrays["weights"]
     return noisy_grads, raw_grads, weights
 
+def load_weights(args):
+    """
+    Load weights from the checkpoint path corresponding to args
+    """
+    weights = None
+    f = f"ckpts/{args.arch}/{args.dataset}/weights_{args.num_runs}_{args.epochs}_{int(args.lr)}_{int(args.epsilon)}.npz"
+    print(f"Loading weights from {f}")
+    loaded_arrays = np.load(f, allow_pickle=True)
+    weights = loaded_arrays["weights"]
+    return weights
+
 def set_weights(model, args):
     """
     load the weights from the checkpoint path corresponding to args
     set the weights to the model
     """
-    noisy_grads, raw_grads, weights = load_grads_weights(args)
-    final_weights = torch.from_numpy(weights[-1,-1])
+    # noisy_grads, raw_grads, weights = load_grads_weights(args)
+    final_weights = load_weights(args)
+    final_weights = torch.from_numpy(final_weights)
+    # final_weights = torch.from_numpy(weights[-1,-1])
     final_weights = final_weights.to(args.device).view_as(model.weight.data)
     model.weight.data.zero_()
     model.weight.data.add_(final_weights)

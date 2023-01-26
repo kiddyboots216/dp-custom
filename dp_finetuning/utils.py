@@ -1,5 +1,6 @@
 import os
 import argparse 
+from collections import defaultdict
 
 import timm
 import torch
@@ -14,6 +15,8 @@ import pdb
 import code
 
 from stl_cifar_style import STL10 as STL10_CIFAR
+from cifar10p1 import CIFAR10p1
+from cifar10c import CIFAR10C
 
 class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
@@ -30,24 +33,39 @@ DATASET_TO_CLASSES = {
             'waterbirds': 2,
             'fmow': 62,
             'camelyon17': 2,
-            'iwildcam': 186}
+            'iwildcam': 186,
+            'domainnet': 345}
 TRANSFER_DATASETS_TO_CLASSES = {
     'STL10_CIFAR': 10,
+    'CIFAR10p1': 10,
     'CIFAR10': 10,
     'STL10': 10,
+    'CIFAR10C': 10,
+    'CIFAR100C': 100,
 }
 DATASET_TO_SIZE = {
     'CIFAR10': 50000,
     'CIFAR100': 50000,  
     'STL10': 5000,
     'FashionMNIST': 60000,
-    'EMNIST': 697932
+    'EMNIST': 697932,
+    'waterbirds': 4795,
+    'domainnet': 48212,
  }
 ARCH_TO_NUM_FEATURES = {
     "beitv2_large_patch16_224_in22k": 1024,
     "beit_large_patch16_512":       1024,
     "convnext_xlarge_384_in22ft1k": 2048,
 }
+ARCH_TO_INTERP_SIZE = {
+    "beitv2_large_patch16_224_in22k": 224,
+    "beit_large_patch16_512": 512,
+    "convnext_xlarge_384_in22ft1k": 384,
+    "vit_large_patch16_384": 384,
+    "vit_base_patch16_384": 384,
+    "tf_efficientnet_l2_ns": 800,
+}
+
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch DP Finetuning')
     parser.add_argument(
@@ -119,7 +137,7 @@ def parse_args():
         default=False,
         help="Enable Secure RNG to have trustworthy privacy guarantees."
         "Comes at a performance cost. Opacus will emit a warning if secure rng is off,"
-        "indicating that for production use it's recommender to turn it on.",
+        "indicating that for production use it's recommended to turn it on.",
     )
     parser.add_argument(
         "--delta",
@@ -199,6 +217,12 @@ def parse_args():
         default=False,
         help="Store gradients for each epoch"
     )
+    parser.add_argument(
+        "--store_weights",
+        action="store_true",
+        default=False,
+        help="Store only the final weights"
+    )
     # parser.add_argument(
     #     "--weight_avg_mode",
     #     choices=[
@@ -250,9 +274,10 @@ def dataset_with_indices(cls):
 def get_features(f, images, interp_size=224, batch=64):
     features = []
     for img in tqdm(images.split(batch)):
-        with torch.no_grad():
-            img = F.interpolate(img.cuda(), size=(interp_size, interp_size), mode="bicubic") # up-res size hardcoded
-            features.append(f(img).detach().cpu())
+    # MyPdb().set_trace()
+    # for img in tqdm(images):
+        img = F.interpolate(img.cuda(), size=(interp_size, interp_size), mode="bicubic") # up-res size hardcoded
+        features.append(f(img).detach().cpu())
     return torch.cat(features)
 
 def download_things(args):
@@ -265,10 +290,7 @@ def download_things(args):
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True, download=True)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True))
 
-def extract_features(args, images_train, images_test):
-    ### GET DATA
-    dataset_path = args.dataset_path + args.dataset
-
+def extract_features(args, images_train=None, images_test=None):
     ### GET PATH
     abbrev_arch = args.arch
     extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + abbrev_arch
@@ -279,22 +301,19 @@ def extract_features(args, images_train, images_test):
 
     print("GENERATING AND SAVING EXTRACTED FEATURES AT ", extracted_train_path)
     feature_extractor = nn.DataParallel(timm.create_model(args.arch, num_classes=0, pretrained=True)).eval().cuda()
-    from collections import defaultdict
-    ARCH_TO_INTERP_SIZE = defaultdict(lambda: 224)
-    archs_to_interp_sizes = {
-        "beit_large_patch16_512": 512,
-        "convnext_xlarge_384_in22ft1k": 384,
-        "vit_large_patch16_384": 384,
-        "vit_base_patch16_384": 384,
-        "tf_efficientnet_l2_ns": 800,
-    }
-    ARCH_TO_INTERP_SIZE.update(archs_to_interp_sizes)
     interp_size = ARCH_TO_INTERP_SIZE[args.arch]
-    features_train = get_features(feature_extractor, images_train, interp_size=interp_size)
-    features_test = get_features(feature_extractor, images_test, interp_size=interp_size)
-    os.makedirs(extracted_path, exist_ok=True)
-    np.save(extracted_train_path, features_train)
-    np.save(extracted_test_path, features_test)
+    batch_extract_size = 64
+    if args.arch in ["beit_large_patch16_512"]:
+        batch_extract_size = 32
+    
+    if images_train is not None:
+        features_train = get_features(feature_extractor, images_train, interp_size=interp_size, batch=batch_extract_size)
+        os.makedirs(extracted_path, exist_ok=True)
+        np.save(extracted_train_path, features_train)
+    if images_test is not None:
+        features_test = get_features(feature_extractor, images_test, interp_size=interp_size, batch=batch_extract_size)
+        os.makedirs(extracted_path, exist_ok=True)
+        np.save(extracted_test_path, features_test)
 
 def get_ds(args):
     dataset_path = args.dataset_path
@@ -317,7 +336,54 @@ def get_ds(args):
         images_test = torch.tensor(STL_CIFAR_dataset.data) / 255.0
         labels_test = torch.tensor(STL_CIFAR_dataset.labels)
         if not os.path.exists(extracted_path):
-            extract_features(args, images_test, images_test) # don't want to extract train features
+            extract_features(args, images_train=None, images_test=images_test) # don't want to extract train features
+        x_test = np.load(extracted_test_path)
+        features_test = torch.from_numpy(x_test)
+        ds_test = TensorDataset(features_test, labels_test)
+        test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
+        return None, test_loader, None, None # no train loader
+    elif args.dataset in ["CIFAR10p1"]:
+        print("Loading CIFAR10p1")
+        CIFAR10p1_dataset = CIFAR10p1(
+            root = "/home/ashwinee/CIFAR-10.1/datasets/", # download from https://github.com/modestyachts/CIFAR-10.1
+            split = "test",
+            transform = None)
+        images_test = torch.tensor(CIFAR10p1_dataset._imagedata.transpose(0, 3, 1, 2)) / 255.0
+        labels_test = torch.tensor(CIFAR10p1_dataset._labels)
+        if not os.path.exists(extracted_path):
+            extract_features(args, images_train=None, images_test=images_test) # don't want to extract train features
+        x_test = np.load(extracted_test_path)
+        features_test = torch.from_numpy(x_test)
+        ds_test = TensorDataset(features_test, labels_test)
+        test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
+        return None, test_loader, None, None # no train loader
+    elif args.dataset in ["CIFAR10C"]:
+        print("Loading CIFAR10C")
+        CIFAR10C_dataset = CIFAR10C(root="/data/nvme/ashwinee/datasets/CIFAR10C", 
+                            corruption="gaussian_noise", 
+                            severity=2, 
+                            transform=None)
+        images_test = torch.tensor(CIFAR10C_dataset._xs.transpose(0, 3, 1, 2)) / 255.0
+        labels_test = CIFAR10C_dataset._ys
+        # MyPdb().set_trace()
+        if not os.path.exists(extracted_path):
+            extract_features(args, images_train=None, images_test=images_test)
+        x_test = np.load(extracted_test_path)
+        features_test = torch.from_numpy(x_test)
+        ds_test = TensorDataset(features_test, labels_test)
+        test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False)
+        return None, test_loader, None, None # no train loader
+    elif args.dataset in ["CIFAR100C"]:
+        print("Loading CIFAR100C")
+        CIFAR100C_dataset = CIFAR10C(root="/data/nvme/ashwinee/datasets/CIFAR100C", 
+                            corruption="gaussian_noise", 
+                            severity=2, 
+                            transform=None)
+        images_test = torch.tensor(CIFAR100C_dataset._xs.transpose(0, 3, 1, 2)) / 255.0
+        labels_test = CIFAR100C_dataset._ys
+        # MyPdb().set_trace()
+        if not os.path.exists(extracted_path):
+            extract_features(args, images_train=None, images_test=images_test)
         x_test = np.load(extracted_test_path)
         features_test = torch.from_numpy(x_test)
         ds_test = TensorDataset(features_test, labels_test)
@@ -337,15 +403,23 @@ def get_ds(args):
             ds_test = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
         images_train, labels_train = torch.tensor(ds_train.data.unsqueeze(1).repeat(1, 3, 1, 1)).float() / 255.0, torch.tensor(ds_train.targets)
         images_test, labels_test = torch.tensor(ds_test.data.unsqueeze(1).repeat(1, 3, 1, 1)).float() / 255.0, torch.tensor(ds_test.targets)
+    elif "CIFAR100" in args.dataset:
+        transform = transforms.Compose([transforms.ToTensor(),transforms.ColorJitter(brightness=(0.2),saturation=(0.2),hue=(0.2))])
+        train_ds = getattr(datasets, args.dataset)(dataset_path, transform=transform, train=True)
+        images_train, labels_train = torch.tensor(train_ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(train_ds.targets)
+        test_ds = getattr(datasets, args.dataset)(dataset_path, transform=transform, train=False)
+        images_test, labels_test = torch.tensor(test_ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(test_ds.targets)
+        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=4, shuffle=False)
+        test_loader = torch.utils.data.DataLoader(test_ds, batch_size=4, shuffle=False)
     else:
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=True)
         images_train, labels_train = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
         ds = getattr(datasets, args.dataset)(dataset_path, transform=transforms.ToTensor(), train=False)
         images_test, labels_test = torch.tensor(ds.data.transpose(0, 3, 1, 2)) / 255.0, torch.tensor(ds.targets)
-    len_test = labels_test.shape[0]
     kwargs = {'num_workers': args.workers, 'pin_memory': True}
     if not os.path.exists(extracted_path):
-        extract_features(args, images_train, images_test)
+        # extract_features(args, images_train, images_test)
+        extract_features(args, train_loader, test_loader)
     if args.augmult > -1:
         ds_train = make_finetune_augmult_dataset(args, images_train, labels_train)
         # kwargs.update({'collate_fn': my_collate_func})
@@ -363,7 +437,7 @@ def get_ds(args):
     features_test = torch.from_numpy(x_test)
     ds_test = TensorDataset(features_test, labels_test)
     test_loader = DataLoader(ds_test, batch_size=len(ds_test), shuffle=False, **kwargs)
-    return train_loader, test_loader, features_test.shape[-1], len(labels_test)
+    return train_loader, test_loader
 
 from typing import Any, Callable, Optional, Tuple, Sequence
 
@@ -543,6 +617,11 @@ class FinetuneAugmultDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.targets)
+
+def set_all_seeds(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed(seed)
 
 class SlantedTriangularLearningRate(torch.optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, 

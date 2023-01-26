@@ -16,6 +16,7 @@ from opacus import PrivacyEngine
 from opacus.utils.batch_memory_manager import wrap_data_loader
 
 from utils import parse_args, dataset_with_indices, extract_features, get_ds, DATASET_TO_CLASSES, PiecewiseLinear
+from utils import set_all_seeds, ARCH_TO_INTERP_SIZE, ARCH_TO_NUM_FEATURES
 import pdb
 import code
 
@@ -148,25 +149,20 @@ def test(args, model_dict, device, test_loader):
     print_test_stats(test_stats)
     return best_correct(test_stats)
 
-def set_all_seeds(seed):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    torch.cuda.manual_seed(seed)
-
-def setup_all(train_loader, test_loader, num_features, len_test):
+def setup_all(train_loader):
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
-    model = nn.Linear(num_features, args.num_classes, bias=False).cuda()
-    if args.augmult > -1:
-        # model = timm.create_model(args.arch, num_classes=DATASET_TO_CLASSES[args.dataset], pretrained=True).cuda()
-        feature_extractor = timm.create_model(args.arch, num_classes=0, pretrained=True).cuda()
-        for p in feature_extractor.parameters():
-        # for p in model.parameters():
-            p.requires_grad = False
-        # model.get_classifier().weight.requires_grad = True
-        # model.get_classifier().bias.requires_grad = True
-        model = nn.Sequential(feature_extractor,
-                                model)
-        model = nn.DataParallel(model)
+    model = nn.Linear(ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=False).cuda()
+    # if args.augmult > -1:
+    #     # model = timm.create_model(args.arch, num_classes=DATASET_TO_CLASSES[args.dataset], pretrained=True).cuda()
+    #     feature_extractor = timm.create_model(args.arch, num_classes=0, pretrained=True).cuda()
+    #     for p in feature_extractor.parameters():
+    #     # for p in model.parameters():
+    #         p.requires_grad = False
+    #     # model.get_classifier().weight.requires_grad = True
+    #     # model.get_classifier().bias.requires_grad = True
+    #     model = nn.Sequential(feature_extractor,
+    #                             model)
+    #     model = nn.DataParallel(model)
     if args.standardize_weights:
         model.weight.data.zero_()
 
@@ -192,29 +188,19 @@ def setup_all(train_loader, test_loader, num_features, len_test):
             noise_multiplier=args.sigma,
             max_grad_norm=args.max_per_sample_grad_norm,
             clipping=clipping,
-            delta=args.delta,
+            # delta=args.delta,
             poisson_sampling=True,
         )
         if args.augmult > -1 or args.num_classes>10:
             train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=5000, optimizer=optimizer)
 
     sched = None
+    if args.sched:
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
     # swa_model = AveragedModel(model)
     ema_avg = lambda averaged_model_parameter, model_parameter, num_averaged: 0.1 * averaged_model_parameter + 0.9 * model_parameter
     ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
-    return model, ema_model, optimizer, privacy_engine, sched
-
-def binary_search(initial_guess, min_val, max_val, num_tries=10):
-    # do a binary search over values of r starting from the initial guess to find the value that gives the best accuracy
-    best_r_so_far = initial_guess
-    next_r = initial_guess
-    best_acc_so_far = 0
-    for i in range(num_tries):
-        hparams = get_hparams(next_r)
-        result = train_and_test(hparams)
-        if result["test_acc"] > best_acc_so_far:
-            best_acc_so_far = result["test_acc"]
-            best_r_so_far = next_r
+    return model, ema_model, optimizer, privacy_engine, sched, train_loader
 
 def extract_grads_weights(model, raw_grads, noisy_grads, weights):
     """
@@ -236,6 +222,7 @@ def do_training(model, ema_model, train_loader, test_loader, optimizer, privacy_
             sched.step()
             wandb.log({"lr" : sched.get_lr()})
         train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)   
+        # print(f"Epoch {epoch} train loss: {train_loss}")
         raw_grads, noisy_grads, weights = extract_grads_weights(model, raw_grads, noisy_grads, weights)
         new_correct = test(args, {"model": model,"ema": ema_model,}, args.device, test_loader)
         corrects.append(new_correct)
@@ -253,12 +240,22 @@ def store_grads(all_noisy_grads, all_raw_grads, all_weights):
         f_loc = f_dir + f_path + f_ext
         np.savez(f_loc, noisy_grads=all_noisy_grads.cpu().numpy(), raw_grads=all_raw_grads.cpu().numpy(), weights=all_weights.cpu().numpy())
         print(f"Saved grads to {f_loc}")
+    elif args.store_weights:
+        final_weights = all_weights[-1][-1]
+        f_dir = f"ckpts/{args.arch}/{args.dataset}"
+        f_path = f"/weights_{args.num_runs}_{args.epochs}_{int(args.lr)}_{int(args.epsilon)}"
+        f_ext = ".npz"  
+        os.makedirs(f_dir, exist_ok=True)
+        f_loc = f_dir + f_path + f_ext
+        np.savez(f_loc, weights=final_weights.cpu().numpy())
+        print(f"Saved weights to {f_loc}")
 
 def main():
     global args
     global len_test
     args = parse_args()
-    train_loader, test_loader, num_features, len_test = get_ds(args)
+    train_loader, test_loader = get_ds(args)
+    len_test = len(test_loader.dataset)
     wandb.init(project="baselines", 
         entity="dp-finetuning")
     wandb.config.update(args)
@@ -266,7 +263,7 @@ def main():
     best_accs = []
     for num_run in range(args.num_runs):
         set_all_seeds(args.seed + num_run)
-        model, ema_model, optimizer, privacy_engine, sched = setup_all(train_loader, test_loader, num_features, len_test)
+        model, ema_model, optimizer, privacy_engine, sched, train_loader = setup_all(train_loader)
         raw_grads, noisy_grads, weights, corrects = do_training(model, ema_model, train_loader, test_loader, optimizer, privacy_engine, sched)
         all_noisy_grads.append(noisy_grads)
         all_raw_grads.append(raw_grads)
@@ -291,7 +288,7 @@ def main():
     best_acc_std = np.std(best_accs)
     wandb_dict = {"best_acc": best_acc, "best_acc_std": best_acc_std}
     logged_epsilon = None
-    if args.mode in ["vanilla"]:
+    if args.mode in ["vanilla"] and args.epsilon != 0:
         logged_epsilon = privacy_engine.accountant.get_epsilon(delta=1e-5)
     elif args.mode in ["individual", "dpsgdfilter"]:
         logged_epsilon = args.epsilon * privacy_engine.accountant.privacy_usage.max()
