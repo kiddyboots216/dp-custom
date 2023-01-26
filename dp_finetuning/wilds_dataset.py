@@ -146,7 +146,9 @@ class Fmow(Dataset):
         self._regions = regions
         if 'all' not in self._regions:
             super_indices = self._subset.indices
+            self.super_indices = super_indices
             subset_metadata = self._subset.dataset.metadata_array[super_indices].numpy()
+            self.subset_metadata = subset_metadata
             self._indices = np.argwhere([(a in regions) for a in subset_metadata[:, 0]])[:,0]
         
     def __getitem__(self, i):
@@ -161,6 +163,22 @@ class Fmow(Dataset):
             return len(self._indices)
         else:
             return len(self._subset)
+        
+class FmowTensor(Dataset):
+    def __init__(self, features, dataset):
+        super().__init__()
+        self.features = features
+        self.y_array = dataset._subset.y_array
+        self._indices = dataset._indices
+        self._regions = dataset._regions
+    
+    def __getitem__(self, i):
+        x = self.features[i]
+        y = self.y_array[self._indices[i]]
+        return x, y
+    
+    def __len__(self) -> int:
+        return len(self._indices)
 
 VALID_DOMAINS = [
     'clipart',

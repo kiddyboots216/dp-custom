@@ -51,6 +51,7 @@ DATASET_TO_SIZE = {
     'EMNIST': 697932,
     'waterbirds': 4795,
     'domainnet': 48212,
+    'fmow': 20973,
  }
 ARCH_TO_NUM_FEATURES = {
     "beitv2_large_patch16_224_in22k": 1024,
@@ -251,7 +252,7 @@ def parse_args():
                 num_steps=int(args.epochs/sampling_probability),
                 target_epsilon=args.epsilon,
                 target_delta=args.delta,
-                eps_error=0.001,
+                eps_error=0.01,
                 mu_max=5000)
     for arg in vars(args):
         print(' {} {}'.format(arg, getattr(args, arg) or ''))

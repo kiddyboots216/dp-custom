@@ -15,7 +15,7 @@ import wandb
 import torchvision.transforms as transforms
 
 from utils import parse_args, ARCH_TO_INTERP_SIZE, ARCH_TO_NUM_FEATURES, set_all_seeds
-from wilds_dataset import WILDS, WILDSTensor, Fmow, DomainNet
+from wilds_dataset import WILDS, WILDSTensor, Fmow, DomainNet, FmowTensor
 
 args = None
 criterion = nn.CrossEntropyLoss()
@@ -29,17 +29,23 @@ class MyPdb(pdb.Pdb):
         code.interact("*interactive*", local=self.curframe_locals)
 
 def load_wilds_ds():
+    print("Loading dataset: {}".format(args.dataset))
     # Load the full dataset, and download it if necessary
     # dataset = get_dataset(dataset=args.dataset, download=True, root_dir=args.dataset_path)
     transform = transforms.ToTensor()
     if args.dataset == "fmow":
+        # transform = transforms.Compose([
+        #     transforms.ToTensor(),
+        #     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # ])
         train_data = Fmow(regions=[3], split="train", root=args.dataset_path, transform=transform)
-        test_data = Fmow(regions=[3], split="test", root=args.dataset_path, transform=transform)
+        val_data = Fmow(regions=[3], split="val", root=args.dataset_path, transform=transform)
+        test_data = Fmow(regions=[1,2], split="val", root=args.dataset_path, transform=transform)
     elif args.dataset == "domainnet":
         train_data = DomainNet(domain='sketch', split='train', transform=transform,
-                               unlabeled=False, verbose=True, version='sentry')
+                               unlabeled=False, verbose=True, version='full')
         test_data = DomainNet(domain='sketch', split='test', transform=transform,
-                                unlabeled=False, verbose=True, version='sentry')
+                                unlabeled=False, verbose=True, version='full')
     else:
         train_data = WILDS(args.dataset, split="train", root=args.dataset_path, transform=transform)
         test_data = WILDS(args.dataset, split="test", root=args.dataset_path, transform=transform)
@@ -53,11 +59,15 @@ def load_wilds_ds():
     datasets = [train_data, test_data]
     # datasets += aux_test_datasets
     dataloaders = [train_loader, test_loader] 
+    if args.dataset == "fmow":
+        val_loader = DataLoader(val_data, batch_size=bsz, shuffle=False, num_workers=args.workers)
+        datasets.append(val_data)
+        dataloaders.append(val_loader)
     # dataloaders += aux_test_loaders
     return datasets, dataloaders
     # return train_data, test_data, train_loader, test_loader, dataset, aux_test_loaders
 
-def gen_wilds_ds(loaders, arch):
+def gen_wilds_ds(loader, arch):
     feature_extractor = nn.DataParallel(timm.create_model(arch, num_classes=0, pretrained=True)).eval().to(device)
     
     def get_features(f, imgs, interp_size):
@@ -72,7 +82,7 @@ def gen_wilds_ds(loaders, arch):
     interp_size = ARCH_TO_INTERP_SIZE[arch]
     # features_train = get_features(feature_extractor, train_loader, interp_size=interp_size)
     # features_test = get_features(feature_extractor, test_loader, interp_size=interp_size)
-    features = [get_features(feature_extractor, loader, interp_size=interp_size) for loader in loaders]
+    features = get_features(feature_extractor, loader, interp_size=interp_size)
     return features
 
 def get_features_paths():
@@ -83,6 +93,9 @@ def get_features_paths():
     extracted_test_path = extracted_path + "/_test.npy"
     extracted_paths.append(extracted_train_path)
     extracted_paths.append(extracted_test_path)
+    if args.dataset in ["fmow"]:
+        extracted_val_path = extracted_path + "/_val.npy"
+        extracted_paths.append(extracted_val_path)
     return extracted_paths
 
 def get_wilds_ds():
@@ -90,30 +103,41 @@ def get_wilds_ds():
     # labels_train, labels_test = train_data._dataset.y_array, test_data._dataset.y_array
     paths = get_features_paths()
     if not all([os.path.exists(path) for path in paths]):
-        features = gen_wilds_ds(loaders=dataloaders, arch=args.arch)
         os.makedirs(paths[0].rsplit("/", 1)[0], exist_ok=True)
-        for path, feature in zip(paths, features):
-            np.save(path, feature)
+        for path, dataloader in zip(paths, dataloaders):
+            if not(os.path.exists(path)):
+                features = gen_wilds_ds(loader=dataloader, arch=args.arch)
+                np.save(path, features)
     kwargs = {'num_workers': 1, 'pin_memory': True}
     feature_datasets = []
-    train_path, test_path = paths
     if args.dataset == "fmow":
-        labels_train = datasets[0]._subset.y_array
-        labels_test = datasets[1]._subset.y_array
+        # labels_train = datasets[0]._subset.y_array
+        # labels_test = datasets[1]._subset.y_array
+        labels_train, labels_test = None, None
     elif args.dataset == "domainnet":
         labels_train = np.array([int(d[1]) for d in datasets[0].data])
         labels_test = np.array([int(d[1]) for d in datasets[1].data])
     else:
         labels_train = datasets[0]._dataset.y_array
         labels_test = datasets[1]._dataset.y_array
-    train_features = torch.from_numpy(np.load(train_path))
+    train_features = torch.from_numpy(np.load(paths[0]))
     # train_dataset = TensorDataset(train_features, labels_train)
-    train_dataset = WILDSTensor(train_features, datasets[0], labels_train)
+    if args.dataset in ["fmow"]:
+        train_dataset = FmowTensor(train_features, datasets[0])
+    else:
+        train_dataset = WILDSTensor(train_features, datasets[0], labels_train)
     feature_datasets += [train_dataset]
     
-    test_features = torch.from_numpy(np.load(test_path))
-    test_dataset = WILDSTensor(test_features, datasets[1], labels_test)
-    feature_datasets += [test_dataset]
+    test_features = torch.from_numpy(np.load(paths[1]))
+    if args.dataset in ["fmow"]:
+        test_dataset = FmowTensor(test_features, datasets[1])
+        val_features = torch.from_numpy(np.load(paths[2]))
+        val_dataset = FmowTensor(val_features, datasets[2])
+        feature_datasets += [test_dataset]
+        feature_datasets += [val_dataset]
+    else:
+        test_dataset = WILDSTensor(test_features, datasets[1], labels_test)
+        feature_datasets += [test_dataset]
     len_f = lambda dataset: args.batch_size
     if args.batch_size == -1:
         len_f = lambda dataset: len(dataset)
@@ -144,7 +168,7 @@ def get_privacy_engine(model, loaders, optimizer):
         )
         if args.dataset == "domainnet":
             train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=2048, optimizer=optimizer)
-    return model, optimizer, [train_loader, loaders[1]], privacy_engine
+    return model, optimizer, [train_loader] + loaders[1:], privacy_engine
 
 def get_scheduler(optimizer):
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -154,6 +178,7 @@ def get_scheduler(optimizer):
     return sched
 
 def setup_all():
+    print("Setting up all")
     loaders = get_wilds_ds()
     model = get_model()
     optimizer = get_optimizer(model)
@@ -196,14 +221,18 @@ def test(model, device, test_loader):
 
 def eval(loader, pred, true):
     correct = (pred == true).sum().item()/len(true)
-    name = loader.dataset.get_meta_selector()
-    print(f"{name} accuracy: {correct:.4f}")
+    # name = loader.dataset.get_meta_selector()
+    print(f"Accuracy: {correct:.4f}")
     return correct, correct
     
 def wilds_eval(loader, pred, true):
     if args.dataset == "fmow":
-        all_metadata = loader.dataset.dataset._subset.metadata_array[:pred.shape[0]]
-        results, results_str = loader.dataset.dataset._subset.eval(pred, true, all_metadata)
+        correct = (pred == true).sum().item()/len(true)
+        region = loader.dataset._regions
+        results_str = f"Accuracy on Region {region}: {correct:.4f}"
+        results = {f"Accuracy_{region}": correct}
+        # all_metadata = loader.dataset.dataset.subset_metadata
+        # results, results_str = loader.dataset.dataset._subset.eval(pred, true, all_metadata)
     elif args.dataset == "domainnet":
         correct = (pred == true).sum().item()/len(true)
         results_str = f"Accuracy: {correct:.4f}"
@@ -227,22 +256,29 @@ def update_test_results(best_test_results, test_results):
         best_test_results[0] = max(best_test_results[0], test_results['adj_acc_avg'])
         best_test_results[1] = max(best_test_results[1], test_results['acc_wg'])
     elif args.dataset == "fmow":
-        best_test_results[0] = max(best_test_results[0], test_results['acc_avg'])
-        best_test_results[1] = max(best_test_results[1], test_results['acc_worst_region'])
+        best_test_results[0] = max(best_test_results[0], test_results["Accuracy_[3]"])
+        best_test_results[1] = max(best_test_results[1], test_results["Accuracy_[1, 2]"])
+        # best_test_results[0] = max(best_test_results[0], test_results['acc_avg'])
+        # best_test_results[1] = max(best_test_results[1], test_results['acc_worst_region'])
     else:
         best_test_results[0] = max(best_test_results[0], test_results['acc_avg'])
         best_test_results[1] = max(best_test_results[1], test_results['acc_wg'])
     return best_test_results
 
 def do_everything():
+    print("Starting")
     loaders, model, optimizer, privacy_engine, sched = setup_all()
     best_test_results = [0,0]
     for i in range(args.epochs):
+        # if args.dataset not in ["fmow"]:
         train_results = wilds_eval(loaders[0], *train(model, device, loaders[0], optimizer))
-        if args.dataset not in ["fmow"]:
-            test_results = wilds_eval(loaders[1], *test(model, device, loaders[1]))
-        else:
-            test_results = train_results
+        # else:
+        # train_results = eval(loaders[0], *train(model, device, loaders[0], optimizer))
+        # if args.dataset not in ["fmow"]:
+        test_results = wilds_eval(loaders[1], *test(model, device, loaders[1]))
+        if args.dataset in ["fmow"]:
+            val_results = wilds_eval(loaders[2], *test(model, device, loaders[2]))
+            test_results.update(val_results)
         best_test_results = update_test_results(best_test_results, test_results)
     return best_test_results, model, privacy_engine
 
