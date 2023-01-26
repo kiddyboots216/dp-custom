@@ -205,7 +205,7 @@ VALID_SPLITS = ['train', 'test']
 
 VALID_VERSIONS = ['full', 'sentry']
 
-ROOT = '/data/nvme/ashwinee/datasets/domainnet'
+ROOT = '/data/nvme/$USER/datasets/domainnet'
 SENTRY_SPLITS_ROOT = ROOT
 
 

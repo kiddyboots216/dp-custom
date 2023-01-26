@@ -167,7 +167,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_path",
         type=str,
-        default="/data/nvme/ashwinee/datasets/",
+        default="",
     )
     parser.add_argument(
         "--augmult",
