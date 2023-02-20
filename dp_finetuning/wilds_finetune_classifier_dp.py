@@ -24,9 +24,11 @@ device = "cuda:0"
 import pdb
 import code
 
+
 class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
         code.interact("*interactive*", local=self.curframe_locals)
+
 
 def load_wilds_ds():
     print("Loading dataset: {}".format(args.dataset))
@@ -47,22 +49,34 @@ def load_wilds_ds():
         test_data = DomainNet(domain='sketch', split='test', transform=transform,
                                 unlabeled=False, verbose=True, version='full')
     else:
-        train_data = WILDS(args.dataset, split="train", root=args.dataset_path, transform=transform)
-        test_data = WILDS(args.dataset, split="test", root=args.dataset_path, transform=transform)
+        train_data = WILDS(
+            args.dataset, split="train", root=args.dataset_path, transform=transform
+        )
+        test_data = WILDS(
+            args.dataset, split="test", root=args.dataset_path, transform=transform
+        )
     bsz = 4
     if args.dataset in ["waterbirds", "domainnet"]:
         bsz = 1
-    train_loader = DataLoader(train_data, batch_size=bsz, shuffle=False, num_workers=args.workers)
-    test_loader = DataLoader(test_data, batch_size=bsz, shuffle=False, num_workers=args.workers)
+    train_loader = DataLoader(
+        train_data, batch_size=bsz, shuffle=False, num_workers=args.workers
+    )
+    test_loader = DataLoader(
+        test_data, batch_size=bsz, shuffle=False, num_workers=args.workers
+    )
     # aux_test_datasets = [WILDS(args.dataset, split="test", root=args.dataset_path, transform=transform, meta_selector=meta_selector) for meta_selector in meta_selectors]
     # aux_test_loaders = [DataLoader(aux_test_dataset, batch_size=2, shuffle=False, num_workers=args.workers) for aux_test_dataset in aux_test_datasets]
     datasets = [train_data, test_data]
     # datasets += aux_test_datasets
+<<<<<<< Updated upstream
     dataloaders = [train_loader, test_loader] 
     if args.dataset == "fmow":
         val_loader = DataLoader(val_data, batch_size=bsz, shuffle=False, num_workers=args.workers)
         datasets.append(val_data)
         dataloaders.append(val_loader)
+=======
+    dataloaders = [train_loader, test_loader]
+>>>>>>> Stashed changes
     # dataloaders += aux_test_loaders
     return datasets, dataloaders
     # return train_data, test_data, train_loader, test_loader, dataset, aux_test_loaders
@@ -75,20 +89,29 @@ def gen_wilds_ds(loader, arch):
         for img, label in tqdm(imgs):
             # img = batch[0]
             # MyPdb().set_trace()
-            img = F.interpolate(img.to(device), size=(interp_size, interp_size), mode="bicubic")
+            img = F.interpolate(
+                img.to(device), size=(interp_size, interp_size), mode="bicubic"
+            )
             features.append(feature_extractor(img).detach().cpu())
         return torch.cat(features)
-    
+
     interp_size = ARCH_TO_INTERP_SIZE[arch]
     # features_train = get_features(feature_extractor, train_loader, interp_size=interp_size)
     # features_test = get_features(feature_extractor, test_loader, interp_size=interp_size)
     features = get_features(feature_extractor, loader, interp_size=interp_size)
     return features
 
+
 def get_features_paths():
     ### GET PATH
     extracted_paths = []
-    extracted_path = args.dataset_path + "transfer/features/" + args.dataset.lower() + "_" + args.arch
+    extracted_path = (
+        args.dataset_path
+        + "transfer/features/"
+        + args.dataset.lower()
+        + "_"
+        + args.arch
+    )
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
     extracted_paths.append(extracted_train_path)
@@ -97,6 +120,7 @@ def get_features_paths():
         extracted_val_path = extracted_path + "/_val.npy"
         extracted_paths.append(extracted_val_path)
     return extracted_paths
+
 
 def get_wilds_ds():
     datasets, dataloaders = load_wilds_ds()
@@ -141,17 +165,31 @@ def get_wilds_ds():
     len_f = lambda dataset: args.batch_size
     if args.batch_size == -1:
         len_f = lambda dataset: len(dataset)
-    loaders = [DataLoader(dataset, batch_size=len_f(dataset), shuffle=True, **kwargs) for dataset in feature_datasets]
+    loaders = [
+        DataLoader(dataset, batch_size=len_f(dataset), shuffle=True, **kwargs)
+        for dataset in feature_datasets
+    ]
     return loaders
 
+
 def get_model():
-    model = nn.Linear(ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=False).to(device)
+    model = nn.Linear(ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=False).to(
+        device
+    )
     model.weight.data.zero_()
-    return model 
+    return model
+
 
 def get_optimizer(model):
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, nesterov=False, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=args.lr,
+        momentum=0.9,
+        nesterov=False,
+        weight_decay=args.weight_decay,
+    )
     return optimizer
+
 
 def get_privacy_engine(model, loaders, optimizer):
     privacy_engine = None
@@ -170,6 +208,7 @@ def get_privacy_engine(model, loaders, optimizer):
             train_loader = wrap_data_loader(data_loader=train_loader, max_batch_size=2048, optimizer=optimizer)
     return model, optimizer, [train_loader] + loaders[1:], privacy_engine
 
+
 def get_scheduler(optimizer):
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
@@ -177,14 +216,18 @@ def get_scheduler(optimizer):
     )
     return sched
 
+
 def setup_all():
     print("Setting up all")
     loaders = get_wilds_ds()
     model = get_model()
     optimizer = get_optimizer(model)
-    model, optimizer, loaders, privacy_engine = get_privacy_engine(model, loaders, optimizer)
+    model, optimizer, loaders, privacy_engine = get_privacy_engine(
+        model, loaders, optimizer
+    )
     sched = get_scheduler(optimizer)
     return loaders, model, optimizer, privacy_engine, sched
+
 
 def train(model, device, train_loader, optimizer):
     model.train()
@@ -192,7 +235,6 @@ def train(model, device, train_loader, optimizer):
     all_y_pred = []
     # MyPdb().set_trace()
     for data, target in train_loader:
-        
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
@@ -205,7 +247,8 @@ def train(model, device, train_loader, optimizer):
         optimizer.step()
     # MyPdb().set_trace()
     return torch.cat(all_y_pred).squeeze(), torch.cat(all_y_true)
-        
+
+
 def test(model, device, test_loader):
     # _, loader = test_loader
     model.eval()
@@ -219,12 +262,14 @@ def test(model, device, test_loader):
 
     return torch.cat(all_y_pred).squeeze(), torch.cat(all_y_true)
 
+
 def eval(loader, pred, true):
     correct = (pred == true).sum().item()/len(true)
     # name = loader.dataset.get_meta_selector()
     print(f"Accuracy: {correct:.4f}")
     return correct, correct
-    
+
+
 def wilds_eval(loader, pred, true):
     if args.dataset == "fmow":
         correct = (pred == true).sum().item()/len(true)
@@ -234,14 +279,17 @@ def wilds_eval(loader, pred, true):
         # all_metadata = loader.dataset.dataset.subset_metadata
         # results, results_str = loader.dataset.dataset._subset.eval(pred, true, all_metadata)
     elif args.dataset == "domainnet":
-        correct = (pred == true).sum().item()/len(true)
+        correct = (pred == true).sum().item() / len(true)
         results_str = f"Accuracy: {correct:.4f}"
         results = {"Accuracy": correct}
     else:
-        all_metadata = loader.dataset.dataset._dataset.metadata_array[:pred.shape[0]]
-        results, results_str = loader.dataset.dataset._dataset.eval(pred, true, all_metadata)
+        all_metadata = loader.dataset.dataset._dataset.metadata_array[: pred.shape[0]]
+        results, results_str = loader.dataset.dataset._dataset.eval(
+            pred, true, all_metadata
+        )
     print(results_str)
     return results
+
 
 def update_test_results(best_test_results, test_results):
     """
@@ -253,22 +301,23 @@ def update_test_results(best_test_results, test_results):
         best_test_results[0] = max(best_test_results[0], test_results["Accuracy"])
         best_test_results[1] = max(best_test_results[1], test_results["Accuracy"])
     elif args.dataset == "waterbirds":
-        best_test_results[0] = max(best_test_results[0], test_results['adj_acc_avg'])
-        best_test_results[1] = max(best_test_results[1], test_results['acc_wg'])
+        best_test_results[0] = max(best_test_results[0], test_results["adj_acc_avg"])
+        best_test_results[1] = max(best_test_results[1], test_results["acc_wg"])
     elif args.dataset == "fmow":
         best_test_results[0] = max(best_test_results[0], test_results["Accuracy_[3]"])
         best_test_results[1] = max(best_test_results[1], test_results["Accuracy_[1, 2]"])
         # best_test_results[0] = max(best_test_results[0], test_results['acc_avg'])
         # best_test_results[1] = max(best_test_results[1], test_results['acc_worst_region'])
     else:
-        best_test_results[0] = max(best_test_results[0], test_results['acc_avg'])
-        best_test_results[1] = max(best_test_results[1], test_results['acc_wg'])
+        best_test_results[0] = max(best_test_results[0], test_results["acc_avg"])
+        best_test_results[1] = max(best_test_results[1], test_results["acc_wg"])
     return best_test_results
+
 
 def do_everything():
     print("Starting")
     loaders, model, optimizer, privacy_engine, sched = setup_all()
-    best_test_results = [0,0]
+    best_test_results = [0, 0]
     for i in range(args.epochs):
         # if args.dataset not in ["fmow"]:
         train_results = wilds_eval(loaders[0], *train(model, device, loaders[0], optimizer))
@@ -282,12 +331,13 @@ def do_everything():
         best_test_results = update_test_results(best_test_results, test_results)
     return best_test_results, model, privacy_engine
 
+
 def log_wandb(best_accs, model, privacy_engine):
     best_accs = np.array(best_accs)
-    adj_acc_avg = best_accs[:,0].mean()
-    acc_wg = best_accs[:,1].mean()
-    adj_acc_std = best_accs[:,0].std()
-    acc_wg_std = best_accs[:,1].std()
+    adj_acc_avg = best_accs[:, 0].mean()
+    acc_wg = best_accs[:, 1].mean()
+    adj_acc_std = best_accs[:, 0].std()
+    acc_wg_std = best_accs[:, 1].std()
     wandb_dict = {
         "adj_acc_avg": adj_acc_avg,
         "acc_wg": acc_wg,
@@ -300,11 +350,11 @@ def log_wandb(best_accs, model, privacy_engine):
     wandb_dict.update({"epsilon": logged_epsilon})
     wandb.log(wandb_dict)
 
+
 def main():
-    global args 
+    global args
     args = parse_args()
-    wandb.init(project="baselines", 
-        entity="dp-finetuning")
+    wandb.init(project="baselines", entity="dp-finetuning")
     wandb.config.update(args)
     best_accs = []
     model, privacy_engine = None, None
@@ -313,6 +363,7 @@ def main():
         best_acc, model, privacy_engine = do_everything()
         best_accs.append(best_acc)
     log_wandb(best_accs, model, privacy_engine)
-        
+
+
 if __name__ == "__main__":
     main()

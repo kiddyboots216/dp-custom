@@ -432,9 +432,9 @@ class DPOptimizer(Optimizer):
                 reference=p.summed_grad,
                 generator=self.generator,
                 secure_mode=self.secure_mode,
-            )
+            ).half()
             # p.summed_grad = p.summed_grad / self.base_grad_norm
-            print("GRAD NORM", p.summed_grad.norm())
+            # print("GRAD NORM", p.summed_grad.norm())
             p.grad = (p.summed_grad + noise).view_as(p)
             # p.grad = p.summed_grad
 
@@ -479,8 +479,8 @@ class DPOptimizer(Optimizer):
         for p in self.params:
             p.grad_sample = None
 
-            if not self._is_last_step_skipped:
-                p.summed_grad = None
+            # if not self._is_last_step_skipped:
+            p.summed_grad = None
 
         self.original_optimizer.zero_grad(set_to_none)
 

@@ -15,13 +15,20 @@ from tqdm import tqdm
 from opacus import PrivacyEngine
 from opacus.utils.batch_memory_manager import wrap_data_loader
 
-from utils import parse_args, extract_features, get_ds, DATASET_TO_CLASSES, ARCH_TO_NUM_FEATURES
+from utils import (
+    parse_args,
+    extract_features,
+    get_ds,
+    DATASET_TO_CLASSES,
+    ARCH_TO_NUM_FEATURES,
+)
 
 import pdb
 import code
 
 args = None
 len_test = None
+
 
 def load_grads_weights(args):
     """
@@ -36,6 +43,7 @@ def load_grads_weights(args):
     weights = loaded_arrays["weights"]
     return noisy_grads, raw_grads, weights
 
+
 def load_weights(args):
     """
     Load weights from the checkpoint path corresponding to args
@@ -46,6 +54,7 @@ def load_weights(args):
     loaded_arrays = np.load(f, allow_pickle=True)
     weights = loaded_arrays["weights"]
     return weights
+
 
 def set_weights(model, args):
     """
@@ -61,6 +70,7 @@ def set_weights(model, args):
     model.weight.data.add_(final_weights)
     return model
 
+
 def test(args, model, test_loader):
     device = args.device
     criterion = nn.CrossEntropyLoss()
@@ -71,9 +81,10 @@ def test(args, model, test_loader):
             output = model(data)
             pred = output.argmax(dim=1, keepdim=True)
             corr = pred.eq(target.view_as(pred))
-            acc += corr.sum().item() * 100/target.shape[0]
+            acc += corr.sum().item() * 100 / target.shape[0]
     print(f"Test Accuracy: {acc:.2f}%")
     return acc
+
 
 def main():
     global args
@@ -86,9 +97,9 @@ def main():
     model.eval()
     # set the new dataset for transfer learning
     args.dataset = args.transfer_dataset
-    _, test_loader, _, _ = get_ds(args) # get the new dataset
+    _, test_loader, _, _ = get_ds(args)  # get the new dataset
     test(args, model, test_loader)
-    
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     main()
-    
