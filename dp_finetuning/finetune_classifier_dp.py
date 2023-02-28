@@ -205,6 +205,7 @@ def setup_all(train_loader):
     #     model = nn.DataParallel(model)
     if args.standardize_weights:
         model.weight.data.zero_()
+        # model.bias.data.add_(-10.)
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
     optimizer = torch.optim.SGD(
@@ -239,7 +240,7 @@ def setup_all(train_loader):
         # if args.augmult > -1 or args.num_classes>10:
         print("WRAPPING DATA LOADER")
         train_loader = wrap_data_loader(
-            data_loader=train_loader, max_batch_size=10000, optimizer=optimizer
+            data_loader=train_loader, max_batch_size=2500, optimizer=optimizer
         )
 
     sched = None

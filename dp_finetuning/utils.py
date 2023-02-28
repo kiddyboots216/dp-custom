@@ -38,6 +38,7 @@ DATASET_TO_CLASSES = {
     "camelyon17": 2,
     "iwildcam": 186,
     "domainnet": 345,
+    "ImageNet": 1000,
 }
 TRANSFER_DATASETS_TO_CLASSES = {
     "STL10_CIFAR": 10,
@@ -56,12 +57,14 @@ DATASET_TO_SIZE = {
     'waterbirds': 4795,
     'domainnet': 48212,
     'fmow': 20973,
+    "ImageNet": 1281167,
  }
 ARCH_TO_NUM_FEATURES = {
     "beitv2_large_patch16_224_in22k": 1024,
     "beit_large_patch16_512": 1024,
     "convnext_xlarge_384_in22ft1k": 2048,
     "vit_large_patch16_384": 1024,
+    "vit_giant_patch14_224_clip_laion2b": 1408,
 }
 ARCH_TO_INTERP_SIZE = {
     "beitv2_large_patch16_224_in22k": 224,
@@ -70,8 +73,8 @@ ARCH_TO_INTERP_SIZE = {
     "vit_large_patch16_384": 384,
     "vit_base_patch16_384": 384,
     "tf_efficientnet_l2_ns": 800,
+    "vit_giant_patch14_224_clip_laion2b": 224,
 }
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PyTorch DP Finetuning")
@@ -90,13 +93,7 @@ def parse_args():
     parser.add_argument(
         "--arch",
         type=str,
-        choices=[
-            "beit_large_patch16_512",
-            "convnext_xlarge_384_in22ft1k",
-            "vit_large_patch16_384",
-            "vit_base_patch16_384",
-            "beitv2_large_patch16_224_in22k",
-        ],
+        choices=list(ARCH_TO_NUM_FEATURES.keys()),
     )
     parser.add_argument("--lr", default=1.0, type=float)
     parser.add_argument("--epochs", default=10, type=int)
@@ -259,15 +256,29 @@ def dataset_with_indices(cls):
 
 def get_features(f, images, interp_size=224, batch=64):
     features = []
+    # hardcode to 336
+    crop = transforms.CenterCrop(interp_size)
     for img in tqdm(images.split(batch)):
-        # MyPdb().set_trace()
-        # for img in tqdm(images):
-        img = F.interpolate(
-            img.cuda(), size=(interp_size, interp_size), mode="bicubic"
-        )  # up-res size hardcoded
-        features.append(f(img).detach().cpu())
+        with torch.no_grad():
+            # MyPdb().set_trace()
+            # for img in tqdm(images):
+            img = F.interpolate(
+                # img.cuda(), size=(interp_size, interp_size), mode="bicubic"
+                img.cuda(), size=(336, 336), mode="bicubic"
+            )  # up-res size hardcoded
+            # center crop image to interp_size
+            img = crop(img)
+            features.append(f(img).detach().cpu())
     return torch.cat(features)
 
+def get_features_from_fe(fe, loader):
+    features = []
+    labels = []
+    for img, label in tqdm(loader):
+        with torch.no_grad():
+            features.append(fe(img.cuda()).detach().cpu())
+            labels.append(label)
+    return torch.cat(features), torch.cat(labels)
 
 def download_things(args):
     dataset_path = args.dataset_path
@@ -313,7 +324,7 @@ def extract_features(args, images_train=None, images_test=None):
         .cuda()
     )
     interp_size = ARCH_TO_INTERP_SIZE[args.arch]
-    batch_extract_size = 16
+    batch_extract_size = 256
 
     if images_train is not None:
         features_train = get_features(
@@ -334,6 +345,37 @@ def extract_features(args, images_train=None, images_test=None):
         os.makedirs(extracted_path, exist_ok=True)
         np.save(extracted_test_path, features_test)
 
+def check_zero_ones_range_tensor(x):
+    assert torch.ge(x, 0).prod() and torch.le(x, 1).prod(
+    ), f"Input must be in [0, 1] range. Current range: {[x.min().item(), x.max().item()]}"
+
+class timmFe(nn.Module):
+    """
+    This class is a wrapper around timm models to use them as feature extractors. 
+    We automatically resize images, normalize them and remove the last layer of model to extract features.
+    """
+    def __init__(self, arch, ckpt_path=''):
+        super(timmFe, self).__init__()
+        self.net = timm.create_model(arch, pretrained=True, num_classes=0)
+        self.h, self.w = self.net.default_cfg['input_size'][1:]
+        if ckpt_path:
+            print("Loading feature extractor checkpoint")
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            print("Following keys are not available in feat-extractor ckpt: ", 
+                    set(ckpt.keys()) ^ set(self.net.state_dict().keys()))
+            self.net.load_state_dict(ckpt, strict=False)
+            print(f"Feat extractor successfully loaded from: {ckpt_path}")
+        self.register_buffer('mean', torch.tensor(self.net.default_cfg['mean']).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor(self.net.default_cfg['mean']).view(1, 3, 1, 1))
+        self.normalize_input = True
+    def forward(self, x):
+        check_zero_ones_range_tensor(x)
+        if x.shape[-2:] != torch.Size([self.h, self.w]):
+            x = F.interpolate(x, size=(self.h, self.w), mode='bicubic', align_corners=False)
+            x = x.clamp(0, 1)
+        if self.normalize_input:
+            x = (x - self.mean) / self.std
+        return self.net(x)
 
 def get_ds(args):
     dataset_path = args.dataset_path
@@ -347,12 +389,54 @@ def get_ds(args):
     )
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
-
+    fe = timmFe(args.arch).cuda() # timm models based feature extractor
+    kwargs = {"num_workers": args.workers, "pin_memory": True}
     if not os.path.exists(dataset_path):
         raise Exception(
             "We cannot download a dataset/model here \n Run python utils.py to download things"
         )
-    if args.dataset in ["STL10_CIFAR"]:
+    if args.dataset in ["ImageNet"]:
+        # most models finally require squared images, so h and w are equal
+        assert ARCH_TO_INTERP_SIZE[args.arch] == fe.h, f"Interpolation size {ARCH_TO_INTERP_SIZE[args.arch]} is not equal to {fe.h} h of the model"
+        extracted_train_path = extracted_path + "/_train.npy"
+        labels_train_path = extracted_path + "/_train_labels.npy"
+        extracted_test_path = extracted_path + "/_test.npy"
+        labels_test_path = extracted_path + "/_test_labels.npy"
+        if not os.path.exists(extracted_path):
+            transform = transforms.Compose([transforms.Resize(int(1.14*fe.h)), transforms.CenterCrop(fe.h), transforms.ToTensor()]) 
+            imagenet_path = args.dataset_path + "ImageNet"
+            train_path = imagenet_path + "/train"
+            train_ds = datasets.ImageFolder(train_path, transform=transform)
+            batch_extract_size = 64
+            train_loader = DataLoader(train_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=False)
+            features_train, labels_train = get_features_from_fe(fe, train_loader)
+            test_path = imagenet_path + "/val"
+            test_ds = datasets.ImageFolder(test_path, transform=transform)
+            test_loader = DataLoader(test_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=False)
+            features_test, labels_test = get_features_from_fe(fe, test_loader)
+            os.makedirs(extracted_path, exist_ok=True)
+            np.save(extracted_train_path, features_train)
+            np.save(labels_train_path, labels_train)
+            np.save(extracted_test_path, features_test)
+            np.save(labels_test_path, labels_test)
+        x_train = np.load(extracted_train_path)
+        x_test = np.load(extracted_test_path)
+        features_train = torch.from_numpy(x_train)
+        features_test = torch.from_numpy(x_test)
+        labels_train = torch.from_numpy(np.load(labels_train_path))
+        labels_test = torch.from_numpy(np.load(labels_test_path))
+        ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
+        ds_test = TensorDataset(features_test, labels_test)
+        if args.batch_size == -1:
+            args.batch_size = len(ds_train)
+        train_loader = DataLoader(
+            ds_train, batch_size=args.batch_size, shuffle=True, **kwargs
+        )
+        test_loader = DataLoader(
+            ds_test, batch_size=args.batch_size, shuffle=False, **kwargs
+        )
+        return train_loader, test_loader
+    elif args.dataset in ["STL10_CIFAR"]:
         print("Loading STL10_CIFAR")
         STL_CIFAR_dataset = STL10_CIFAR(
             root="/data/nvme/ashwinee/datasets",
@@ -476,7 +560,7 @@ def get_ds(args):
         transform = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.ColorJitter(brightness=(0.2), saturation=(0.2), hue=(0.2)),
+                # transforms.ColorJitter(brightness=(0.2), saturation=(0.2), hue=(0.2)),
             ]
         )
         train_ds = getattr(datasets, args.dataset)(
@@ -508,8 +592,8 @@ def get_ds(args):
         images_test, labels_test = torch.tensor(
             ds.data.transpose(0, 3, 1, 2)
         ) / 255.0, torch.tensor(ds.targets)
-    kwargs = {"num_workers": args.workers, "pin_memory": True}
-    if not os.path.exists(extracted_path):
+    
+    if not os.path.exists(extracted_train_path):
         extract_features(args, images_train, images_test)
         # extract_features(args, train_loader, test_loader)
     if args.augmult > -1:
