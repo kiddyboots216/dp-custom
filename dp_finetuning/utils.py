@@ -64,6 +64,7 @@ ARCH_TO_NUM_FEATURES = {
     "beit_large_patch16_512": 1024,
     "convnext_xlarge_384_in22ft1k": 2048,
     "vit_large_patch16_384": 1024,
+    "vit_gigantic_patch14_clip_224.laion2b": 1664,
     "vit_giant_patch14_224_clip_laion2b": 1408,
 }
 ARCH_TO_INTERP_SIZE = {
@@ -73,6 +74,7 @@ ARCH_TO_INTERP_SIZE = {
     "vit_large_patch16_384": 384,
     "vit_base_patch16_384": 384,
     "tf_efficientnet_l2_ns": 800,
+    "vit_gigantic_patch14_clip_224.laion2b": 224,
     "vit_giant_patch14_224_clip_laion2b": 224,
 }
 
@@ -199,6 +201,19 @@ def parse_args():
         default=False,
         help="Store only the final weights",
     )
+    parser.add_argument(
+        "--max_phys_bsz",
+        type=int,
+        default=5000,
+    )
+    parser.add_argument(
+        "--optimizer",
+        choices=[
+            "sgd",
+            "adam",
+            "lamb",
+        ],
+    )
     # parser.add_argument(
     #     "--weight_avg_mode",
     #     choices=[
@@ -213,6 +228,7 @@ def parse_args():
     args = parser.parse_args()
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
     if args.sigma == -1:
+        args.delta = 1 / (2 * DATASET_TO_SIZE[args.dataset])
         if args.epsilon == 0.0:
             args.sigma = 0
         else:
@@ -230,6 +246,7 @@ def parse_args():
                 target_delta=args.delta,
                 eps_error=0.01,
                 mu_max=5000)
+            print("Using noise multiplier", args.sigma)
     for arg in vars(args):
         print(" {} {}".format(arg, getattr(args, arg) or ""))
     return args
@@ -271,14 +288,18 @@ def get_features(f, images, interp_size=224, batch=64):
             features.append(f(img).detach().cpu())
     return torch.cat(features)
 
-def get_features_from_fe(fe, loader):
-    features = []
-    labels = []
-    for img, label in tqdm(loader):
-        with torch.no_grad():
-            features.append(fe(img.cuda()).detach().cpu())
-            labels.append(label)
-    return torch.cat(features), torch.cat(labels)
+def extract_features_from_model(model, dl, max_count=10**9):
+    feat, labels = [], []
+    count = 0
+    for img, label in tqdm(dl):
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            out = model(img.cuda())
+        feat.append(out.detach().cpu().float())
+        labels.append(label)
+        count += len(img)
+        if count >= max_count:
+            break
+    return torch.cat(feat), torch.cat(labels)
 
 def download_things(args):
     dataset_path = args.dataset_path
@@ -389,7 +410,8 @@ def get_ds(args):
     )
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
-    fe = timmFe(args.arch).cuda() # timm models based feature extractor
+    # fe = timmFe(args.arch).cuda() # timm models based feature extractor
+    
     kwargs = {"num_workers": args.workers, "pin_memory": True}
     if not os.path.exists(dataset_path):
         raise Exception(
@@ -397,32 +419,46 @@ def get_ds(args):
         )
     if args.dataset in ["ImageNet"]:
         # most models finally require squared images, so h and w are equal
-        assert ARCH_TO_INTERP_SIZE[args.arch] == fe.h, f"Interpolation size {ARCH_TO_INTERP_SIZE[args.arch]} is not equal to {fe.h} h of the model"
+        # assert ARCH_TO_INTERP_SIZE[args.arch] == fe.h, f"Interpolation size {ARCH_TO_INTERP_SIZE[args.arch]} is not equal to {fe.h} h of the model"
         extracted_train_path = extracted_path + "/_train.npy"
         labels_train_path = extracted_path + "/_train_labels.npy"
         extracted_test_path = extracted_path + "/_test.npy"
         labels_test_path = extracted_path + "/_test_labels.npy"
         if not os.path.exists(extracted_path):
-            transform = transforms.Compose([transforms.Resize(int(1.14*fe.h)), transforms.CenterCrop(fe.h), transforms.ToTensor()]) 
+            model = timm.create_model(args.arch, pretrained=True, num_classes=0)
+            mean, std = model.pretrained_cfg["mean"], model.pretrained_cfg["std"]
+            input_size = model.pretrained_cfg["input_size"] # [c, h, w]
+            model = torch.nn.DataParallel(model).eval().cuda()
+            tr = transforms.Compose(
+                [
+                    transforms.Resize(int(1.14*input_size[-1])),
+                    transforms.CenterCrop(input_size[-1]),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean, std),
+                ])            
             imagenet_path = args.dataset_path + "ImageNet"
             train_path = imagenet_path + "/train"
-            train_ds = datasets.ImageFolder(train_path, transform=transform)
-            batch_extract_size = 64
+            train_ds = datasets.ImageFolder(train_path, transform=tr)
+            batch_extract_size = 24
             train_loader = DataLoader(train_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=False)
-            features_train, labels_train = get_features_from_fe(fe, train_loader)
+            features_train, labels_train = extract_features_from_model(model, train_loader)
             test_path = imagenet_path + "/val"
-            test_ds = datasets.ImageFolder(test_path, transform=transform)
+            test_ds = datasets.ImageFolder(test_path, transform=tr)
             test_loader = DataLoader(test_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=False)
-            features_test, labels_test = get_features_from_fe(fe, test_loader)
+            features_test, labels_test = extract_features_from_model(model, test_loader)
             os.makedirs(extracted_path, exist_ok=True)
             np.save(extracted_train_path, features_train)
             np.save(labels_train_path, labels_train)
             np.save(extracted_test_path, features_test)
             np.save(labels_test_path, labels_test)
-        x_train = np.load(extracted_train_path)
-        x_test = np.load(extracted_test_path)
-        features_train = torch.from_numpy(x_train)
-        features_test = torch.from_numpy(x_test)
+        # features_train = torch.load(extracted_train_path)
+        # features_test = torch.load(extracted_test_path)
+        # labels_train = torch.load(labels_train_path)
+        # labels_test = torch.load(labels_test_path)
+        print("Loading features from disk")
+        features_train = torch.from_numpy(np.load(extracted_train_path))
+        features_test = torch.from_numpy(np.load(extracted_test_path))
+        print("Loading labels from disk")
         labels_train = torch.from_numpy(np.load(labels_train_path))
         labels_test = torch.from_numpy(np.load(labels_test_path))
         ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)

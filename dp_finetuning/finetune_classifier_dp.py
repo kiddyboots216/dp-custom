@@ -12,8 +12,9 @@ from torchvision import datasets, transforms
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-from opacus import PrivacyEngine
+# from opacus import PrivacyEngine
 from opacus.utils.batch_memory_manager import wrap_data_loader
+from fastDP import PrivacyEngine
 
 from utils import (
     parse_args,
@@ -23,10 +24,9 @@ from utils import (
     DATASET_TO_CLASSES,
     PiecewiseLinear,
 )
-from utils import set_all_seeds, ARCH_TO_INTERP_SIZE, ARCH_TO_NUM_FEATURES
+from utils import set_all_seeds, ARCH_TO_INTERP_SIZE, ARCH_TO_NUM_FEATURES, DATASET_TO_SIZE
 import pdb
 import code
-
 
 class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
@@ -36,64 +36,26 @@ class MyPdb(pdb.Pdb):
 args = None
 len_test = None
 g_weight_cache = None
+n_accum_steps = None
+from wandb_osh.hooks import TriggerWandbSyncHook  # <-- New!
 
-
+trigger_sync = TriggerWandbSyncHook("/scratch/gpfs/ashwinee/.wandb_osh_command_dir")  # <--- New!
 ### UTILS
 def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
     model.train()
     criterion = nn.CrossEntropyLoss()
-    # losses = []
-    for _, (data, target, _) in enumerate(tqdm(train_loader)):
+    losses = []
+    for epoch_step, (data, target, _) in enumerate(tqdm(train_loader)):
         data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
         loss = criterion(model(data), target)
         loss.backward()
-        if args.disable_dp or args.mode in ["vanilla"]:
-            optimizer.step()
-        else:
-            # this is quite messy - consider refactoring
-            if len(train_loader) == 1:
-                if args.mode in ["dpsgdfilter"]:
-                    privacy_engine.accountant.step()
-                    optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
-                    optimizer.step()
-                elif args.mode in ["individual", "sampling"]:
-                    optimizer.compute_norms()
-                    privacy_engine.accountant.compute_norms(indices)
-                    privacy_engine.accountant.step()
-                    optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
-                    optimizer.step(
-                        indices, privacy_engine.accountant.get_violations(indices)
-                    )
-            else:
-                if args.mode in ["dpsgdfilter"]:
-                    optimizer.max_grad_norm = privacy_engine.accountant.max_grad_norm
-                    real_step = optimizer.step()
-                    if real_step:
-                        privacy_engine.accountant.step()
-                        print(
-                            f"NORMS AT EPOCH {epoch}: {optimizer.max_grad_norm} -> {privacy_engine.accountant.max_grad_norm}"
-                        )
-                elif args.mode in ["individual", "sampling"]:
-                    optimizer.compute_norms()
-                    privacy_engine.accountant.compute_norms(indices)
-                    optimizer.max_grad_norm = (
-                        privacy_engine.accountant.max_grad_norm
-                    )  # for sampling, does nothing
-                    real_step = optimizer.step(
-                        indices, privacy_engine.accountant.get_violations(indices)
-                    )
-                    if real_step:
-                        privacy_engine.accountant.step()
-                        print(
-                            "PRIVACY USAGE SO FAR ",
-                            privacy_engine.accountant.privacy_usage,
-                        )
-        # losses.append(loss.detach().numpy())
+        # if ((epoch_step + 1) % n_accum_steps) == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+        losses.append(loss.detach().cpu().numpy())
 
-    # print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
-    # return np.mean(losses)
-    return None
+    print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
+    return np.mean(losses)
 
 
 def do_test(model_dict, data, target, criterion, test_stats):
@@ -119,7 +81,8 @@ def get_classifier(model_dict):
         if args.disable_dp:
             return val
         else:
-            return val._module
+            # return val._module
+            return val
 
     def handle_average(args, key, val):
         if key in ["ema", "swa"]:
@@ -189,8 +152,9 @@ def test(args, model_dict, device, test_loader):
 
 def setup_all(train_loader):
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
+    use_bias = False
     model = nn.Linear(
-        ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=False
+        ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=use_bias
     ).cuda()
     # if args.augmult > -1:
     #     # model = timm.create_model(args.arch, num_classes=DATASET_TO_CLASSES[args.dataset], pretrained=True).cuda()
@@ -205,43 +169,65 @@ def setup_all(train_loader):
     #     model = nn.DataParallel(model)
     if args.standardize_weights:
         model.weight.data.zero_()
-        # model.bias.data.add_(-10.)
-
-    # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=5e-4)
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        momentum=args.momentum,
-        nesterov=False,
-    )
-    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        if use_bias:
+            model.bias.data.add_(-10.)
+    
+    from timm.optim import Lamb, AdamW
+    if args.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            momentum=args.momentum,
+            nesterov=False,
+        )
+    elif args.optimizer == "lamb":
+        optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=0.0)
+    elif args.optimizer == "adam":
+        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=0.0)
     privacy_engine = None
 
     if not args.disable_dp:
-        privacy_engine = PrivacyEngine(secure_mode=args.secure_rng, accountant="gdp")
-        clipping_dict = {
-            "vanilla": "flat",
-            "individual": "budget",
-            "dpsgdfilter": "filter",
-            "sampling": "sampling",
-        }
-        clipping = clipping_dict[args.mode]
-        model, optimizer, train_loader = privacy_engine.make_private(
-            module=model,
-            optimizer=optimizer,
-            data_loader=train_loader,
-            noise_multiplier=args.sigma,
-            max_grad_norm=args.max_per_sample_grad_norm,
-            clipping=clipping,
-            # delta=args.delta,
-            poisson_sampling=True,
-        )
-        # if args.augmult > -1 or args.num_classes>10:
-        print("WRAPPING DATA LOADER")
-        train_loader = wrap_data_loader(
-            data_loader=train_loader, max_batch_size=2500, optimizer=optimizer
-        )
+        if False:
+            privacy_engine = PrivacyEngine(secure_mode=args.secure_rng, accountant="gdp")
+            clipping_dict = {
+                "vanilla": "flat",
+                "individual": "budget",
+                "dpsgdfilter": "filter",
+                "sampling": "sampling",
+            }
+            clipping = clipping_dict[args.mode]
+            model, optimizer, train_loader = privacy_engine.make_private(
+                module=model,
+                optimizer=optimizer,
+                data_loader=train_loader,
+                noise_multiplier=args.sigma,
+                max_grad_norm=args.max_per_sample_grad_norm,
+                clipping=clipping,
+                poisson_sampling=True,
+            )
+            if args.augmult > -1 or args.num_classes>10:
+                print("WRAPPING DATA LOADER")
+                train_loader = wrap_data_loader(
+                    data_loader=train_loader, max_batch_size=MAX_PHYS_BSZ, optimizer=optimizer
+                )
+        else:
+            privacy_engine = PrivacyEngine(
+                module=model,
+                batch_size=args.batch_size,
+                sample_size=DATASET_TO_SIZE[args.dataset],
+                epochs=args.epochs,
+                max_grad_norm=args.max_per_sample_grad_norm,
+                noise_multiplier=args.sigma,
+                target_epsilon=args.epsilon,
+                target_delta=args.delta,
+                accounting_mode="glw",
+                clipping_fn="Abadi",
+                clipping_mode="MixOpt",
+                clipping_style="all-layer",
+                loss_reduction="mean",
+            )
+            privacy_engine.attach(optimizer)
 
     sched = None
     if args.sched:
@@ -263,7 +249,7 @@ def extract_grads_weights(model, raw_grads, noisy_grads, weights):
     raw_model = get_classifier({"model": model})[
         "model"
     ]  # get_classifier gets back the original model, unwraps it
-    raw_grad = raw_model.weight.summed_grad
+    raw_grad = raw_model.weight.grad
     noisy_grad = raw_model.weight.grad  # p.grad = p.summed_grad + noise
     weight = raw_model.weight.data
     raw_grads.append(raw_grad)
@@ -280,10 +266,10 @@ def do_training(
         if sched is not None:
             sched.step()
             wandb.log({"lr": sched.get_lr()})
-        train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
-        raw_grads, noisy_grads, weights = extract_grads_weights(
-            model, raw_grads, noisy_grads, weights
-        )
+        train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
+        # raw_grads, noisy_grads, weights = extract_grads_weights(
+        #     model, raw_grads, noisy_grads, weights
+        # )
         new_correct = test(
             args,
             {
@@ -295,11 +281,15 @@ def do_training(
         )
         corrects.append(new_correct)
         wandb.log({"test_acc": new_correct})
+        trigger_sync()
         ema_model.update_parameters(model)
     return (
-        torch.stack(raw_grads),
-        torch.stack(noisy_grads),
-        torch.stack(weights),
+        # torch.stack(raw_grads),
+        # torch.stack(noisy_grads),
+        # torch.stack(weights),
+        None,
+        None,
+        None,
         corrects,
     )
 
@@ -339,7 +329,14 @@ def store_grads(all_noisy_grads, all_raw_grads, all_weights):
 def main():
     global args
     global len_test
+    global n_accum_steps
     args = parse_args()
+    # args.max_phys_bsz = min(args.batch_size, args.max_phys_bsz)
+    # if args.batch_size == -1:
+    #     DATASET_SIZE = DATASET_TO_SIZE[args.dataset]
+    #     n_accum_steps = max(1, DATASET_SIZE // args.max_phys_bsz)
+    # else:
+    #     n_accum_steps = max(1, args.batch_size // args.max_phys_bsz)
     print("GETTING DATASET")
     train_loader, test_loader = get_ds(args)
     len_test = len(test_loader.dataset)
@@ -369,7 +366,7 @@ def main():
         all_weights.append(weights)
         all_corrects.append(corrects)
         best_accs.append(max(corrects))
-    store_grads(all_noisy_grads, all_raw_grads, all_weights)
+    # store_grads(all_noisy_grads, all_raw_grads, all_weights)
 
     # print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
     # momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
@@ -386,15 +383,16 @@ def main():
     best_acc_std = np.std(best_accs)
     wandb_dict = {"best_acc": best_acc, "best_acc_std": best_acc_std}
     logged_epsilon = None
-    if args.mode in ["vanilla"] and args.epsilon != 0:
-        logged_epsilon = privacy_engine.accountant.get_epsilon(delta=1e-5)
-    elif args.mode in ["individual", "dpsgdfilter"]:
-        logged_epsilon = args.epsilon * privacy_engine.accountant.privacy_usage.max()
-    elif args.mode in ["sampling"]:
-        logged_epsilon = privacy_engine.accountant.privacy_usage
+    # if args.mode in ["vanilla"] and args.epsilon != 0:
+    #     logged_epsilon = privacy_engine.accountant.get_epsilon(delta=1e-5)
+    # elif args.mode in ["individual", "dpsgdfilter"]:
+    #     logged_epsilon = args.epsilon * privacy_engine.accountant.privacy_usage.max()
+    # elif args.mode in ["sampling"]:
+    #     logged_epsilon = privacy_engine.accountant.privacy_usage
     wandb_dict.update({"epsilon": logged_epsilon})
     wandb.log(wandb_dict)
 
 
 if __name__ == "__main__":
+    torch.multiprocessing.set_sharing_strategy('file_system')
     main()
