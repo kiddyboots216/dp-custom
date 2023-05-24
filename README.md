@@ -1,7 +1,7 @@
 # dp-custom
 Custom DP code in PyTorch to generate experiments for various papers.
 
-To quickstart with DP finetuning for the ICML submission with ID 1320, run the following command:
+To quickstart with DP finetuning for the conference submission, run the following command:
 
 ```
 python {script}.py\
@@ -13,7 +13,7 @@ python {script}.py\
     --arch ${5}\
 ```
 
-For conventional CV experiments (CIFAR10, CIFAR100, FashionMNIST, EMNIST, MNIST, STL10, SVHN) `{script} = finetune_classifier_dp`.
+For conventional CV experiments (ImageNet, CIFAR10, CIFAR100, FashionMNIST, EMNIST, MNIST, STL10, SVHN) `{script} = finetune_classifier_dp`.
 
 For OOD experiments in Wilds (waterbirds, fmow, domainnet, camelyon) `{script} = wilds_finetune_classifier_dp` after following directions in the cited papers to download and split the datasets accordingly.
 
