@@ -9,7 +9,6 @@ from tqdm import tqdm
 
 # from opacus.utils.batch_memory_manager import wrap_data_loader
 from fastDP import PrivacyEngine
-import transformers 
 from utils import (
     parse_args,
     get_ds,
@@ -167,8 +166,7 @@ def setup_all(train_loader):
     elif args.optimizer == "lamb":
         optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=0.0)
     elif args.optimizer == "adam":
-        # optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        optimizer = transformers.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     elif args.optimizer == "pgd":
 
         class ProjectedGradientDescent(Optimizer):
@@ -238,7 +236,6 @@ def setup_all(train_loader):
     sched = None
     # if args.sched:
         # sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
-    # sched = transformers.get_constant_schedule_with_warmup(optimizer, num_warmup_steps=50)
     import torch.optim as optim
     class WarmupSchedule(optim.lr_scheduler._LRScheduler):
         def __init__(self, optimizer, warmup_step, warmup_factor, lr, last_epoch=-1):
