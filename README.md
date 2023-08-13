@@ -1,7 +1,15 @@
 # dp-custom
-Custom DP code in PyTorch to generate experiments for various papers.
+To quickly reproduce results for DP fine-tuning on CIFAR10, just install;
+  - pytorch
+  - numpy
+  - torchvision
+  - timm
+  - fastdp from https://github.com/awslabs/fast-differential-privacy (preferred to opacus for a number of reasons)
+  - tqdm
 
-To quickstart with DP finetuning for the ICML submission with ID 1320, run the following command:
+And then just cd into dp_finetuning and run 'python finetune_classifier_dp.py' 
+
+For more general experiment reproduction, run the following command:
 
 ```
 python {script}.py\
@@ -13,7 +21,7 @@ python {script}.py\
     --arch ${5}\
 ```
 
-For conventional CV experiments (CIFAR10, CIFAR100, FashionMNIST, EMNIST, MNIST, STL10, SVHN) `{script} = finetune_classifier_dp`.
+For conventional CV experiments (ImageNet, CIFAR10, CIFAR100, FashionMNIST, EMNIST, MNIST, STL10, SVHN) `{script} = finetune_classifier_dp`.
 
 For OOD experiments in Wilds (waterbirds, fmow, domainnet, camelyon) `{script} = wilds_finetune_classifier_dp` after following directions in the cited papers to download and split the datasets accordingly.
 
@@ -26,4 +34,4 @@ Dependencies (non-exhaustive):
   - opacus
   - timm
   - tqdm
-  - wandb
+  - fastdp

@@ -204,7 +204,6 @@ class DPOptimizer(Optimizer):
         loss_reduction: str = "mean",
         generator=None,
         secure_mode: bool = False,
-        disable_dp: bool = False,
     ):
         """
 
@@ -235,13 +234,11 @@ class DPOptimizer(Optimizer):
         self.original_optimizer = optimizer
         self.noise_multiplier = noise_multiplier
         self.max_grad_norm = max_grad_norm
-        self.base_grad_norm = max_grad_norm
         self.loss_reduction = loss_reduction
         self.expected_batch_size = expected_batch_size
         self.step_hook = None
         self.generator = generator
         self.secure_mode = secure_mode
-        self.disable_dp = disable_dp
 
         self.param_groups = self.original_optimizer.param_groups
         self.defaults = self.original_optimizer.defaults
@@ -397,14 +394,17 @@ class DPOptimizer(Optimizer):
         Stores clipped and aggregated gradients into `p.summed_grad```
         """
 
-        per_param_norms = [
-            g.reshape(len(g), -1).norm(2, dim=-1) for g in self.grad_samples
-        ]
-        per_sample_norms = torch.stack(per_param_norms, dim=1).norm(2, dim=1)
-        per_sample_clip_factor = (self.max_grad_norm / (per_sample_norms + 1e-6)).clamp(
-            max=1.0
-        )
-        per_sample_clip_factor = per_sample_clip_factor / (self.max_grad_norm + 1e-6)
+        if len(self.grad_samples[0]) == 0:
+            # Empty batch
+            per_sample_clip_factor = torch.zeros((0,))
+        else:
+            per_param_norms = [
+                g.reshape(len(g), -1).norm(2, dim=-1) for g in self.grad_samples
+            ]
+            per_sample_norms = torch.stack(per_param_norms, dim=1).norm(2, dim=1)
+            per_sample_clip_factor = (
+                self.max_grad_norm / (per_sample_norms + 1e-6)
+            ).clamp(max=1.0)
 
         for p in self.params:
             _check_processed_flag(p.grad_sample)
@@ -422,23 +422,27 @@ class DPOptimizer(Optimizer):
         """
         Adds noise to clipped gradients. Stores clipped and noised result in ``p.grad``
         """
-
+        signals, noises = [], []
         for p in self.params:
             _check_processed_flag(p.summed_grad)
-
+            signals.append(p.summed_grad.reshape(-1).norm(2))
             noise = _generate_noise(
-                # std=self.noise_multiplier * self.max_grad_norm,
                 std=self.noise_multiplier,
                 reference=p.summed_grad,
                 generator=self.generator,
                 secure_mode=self.secure_mode,
-            ).half()
-            # p.summed_grad = p.summed_grad / self.base_grad_norm
-            # print("GRAD NORM", p.summed_grad.norm())
+            )
             p.grad = (p.summed_grad + noise).view_as(p)
-            # p.grad = p.summed_grad
+            noises.append(noise.reshape(-1).norm(2))
+            del noise
 
             _mark_as_processed(p.summed_grad)
+        
+        verbose = False
+        if verbose:
+            signal, noise = tuple(torch.stack(lst).norm(2).item() for lst in (signals, noises))
+            snr = signal / noise
+            print("SNR", snr, "Signal", signal, "Noise", noise)
 
     def scale_grad(self):
         """
@@ -479,8 +483,8 @@ class DPOptimizer(Optimizer):
         for p in self.params:
             p.grad_sample = None
 
-            # if not self._is_last_step_skipped:
-            p.summed_grad = None
+            if not self._is_last_step_skipped:
+                p.summed_grad = None
 
         self.original_optimizer.zero_grad(set_to_none)
 
@@ -499,7 +503,7 @@ class DPOptimizer(Optimizer):
         if self._check_skip_next_step():
             self._is_last_step_skipped = True
             return False
-        # if not self.disable_dp:
+
         self.add_noise()
         self.scale_grad()
 
@@ -515,10 +519,9 @@ class DPOptimizer(Optimizer):
                 closure()
 
         if self.pre_step():
-            self.original_optimizer.step()
-            return True
+            return self.original_optimizer.step()
         else:
-            return False
+            return None
 
     def __repr__(self):
         return self.original_optimizer.__repr__()

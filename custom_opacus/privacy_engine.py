@@ -337,6 +337,8 @@ class PrivacyEngine:
         delta: float = 1e-5,
         augmult: int = 0,
         expected_sample_rate: float = 0.0,
+        batch_size = None,
+        sample_size = None,
         # **kwargs,
     ) -> Tuple[GradSampleModule, DPOptimizer, DataLoader]:
         """
@@ -418,17 +420,22 @@ class PrivacyEngine:
         if poisson_sampling:
             module.register_backward_hook(forbid_accumulation_hook)
 
-        data_loader = self._prepare_data_loader(
-            data_loader, distributed=distributed, poisson_sampling=poisson_sampling
-        )
+        if data_loader is not None:
+            data_loader = self._prepare_data_loader(
+                data_loader, distributed=distributed, poisson_sampling=poisson_sampling
+            )
 
-        sample_rate = 1 / len(data_loader)
-        expected_batch_size = int(len(data_loader.dataset) * sample_rate)
-        if expected_sample_rate != 0:
-            if expected_sample_rate < 0:
-                expected_batch_size = int(len(data_loader.dataset) * (-1 * expected_sample_rate))
-            else:
-                expected_batch_size = 25000
+            sample_rate = 1 / len(data_loader)
+            expected_batch_size = int(len(data_loader.dataset) * sample_rate)
+            if expected_sample_rate != 0:
+                if expected_sample_rate < 0:
+                    expected_batch_size = int(len(data_loader.dataset) * (-1 * expected_sample_rate))
+                else:
+                    expected_batch_size = 25000
+        else:
+            sample_rate = batch_size / sample_size
+
+            expected_batch_size = batch_size
 
         # expected_batch_size is the *per worker* batch size
         if distributed:

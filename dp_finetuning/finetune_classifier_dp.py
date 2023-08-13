@@ -1,30 +1,20 @@
 import os
 
-import timm
 import torch
-import opacus
 import numpy as np
-import wandb
+# import wandb
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim.swa_utils import AveragedModel
-from torchvision import datasets, transforms
-from torch.utils.data import TensorDataset, DataLoader
+from torch.optim import Optimizer
 from tqdm import tqdm
 
-# from opacus import PrivacyEngine
-from opacus.utils.batch_memory_manager import wrap_data_loader
+# from opacus.utils.batch_memory_manager import wrap_data_loader
 from fastDP import PrivacyEngine
-
+import transformers 
 from utils import (
     parse_args,
-    dataset_with_indices,
-    extract_features,
     get_ds,
-    DATASET_TO_CLASSES,
-    PiecewiseLinear,
 )
-from utils import set_all_seeds, ARCH_TO_INTERP_SIZE, ARCH_TO_NUM_FEATURES, DATASET_TO_SIZE
+from utils import set_all_seeds, ARCH_TO_NUM_FEATURES, DATASET_TO_SIZE
 import pdb
 import code
 
@@ -37,9 +27,7 @@ args = None
 len_test = None
 g_weight_cache = None
 n_accum_steps = None
-from wandb_osh.hooks import TriggerWandbSyncHook  # <-- New!
 
-trigger_sync = TriggerWandbSyncHook("/scratch/gpfs/ashwinee/.wandb_osh_command_dir")  # <--- New!
 ### UTILS
 def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
     model.train()
@@ -49,10 +37,10 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
         data, target = data.to(device), target.to(device)
         loss = criterion(model(data), target)
         loss.backward()
-        # if ((epoch_step + 1) % n_accum_steps) == 0:
-        optimizer.step()
-        optimizer.zero_grad()
-        losses.append(loss.detach().cpu().numpy())
+        if ((epoch_step + 1) % n_accum_steps) == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            losses.append(loss.detach().cpu().numpy())
 
     print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
     return np.mean(losses)
@@ -153,24 +141,19 @@ def test(args, model_dict, device, test_loader):
 def setup_all(train_loader):
     ### CREATE MODEL, OPTIMIZER AND MAKE PRIVATE
     use_bias = False
-    model = nn.Linear(
-        ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=use_bias
-    ).cuda()
-    # if args.augmult > -1:
-    #     # model = timm.create_model(args.arch, num_classes=DATASET_TO_CLASSES[args.dataset], pretrained=True).cuda()
-    #     feature_extractor = timm.create_model(args.arch, num_classes=0, pretrained=True).cuda()
-    #     for p in feature_extractor.parameters():
-    #     # for p in model.parameters():
-    #         p.requires_grad = False
-    #     # model.get_classifier().weight.requires_grad = True
-    #     # model.get_classifier().bias.requires_grad = True
-    #     model = nn.Sequential(feature_extractor,
-    #                             model)
-    #     model = nn.DataParallel(model)
-    if args.standardize_weights:
+    from timm.models.layers import trunc_normal_
+    if args.dataset == "ImageNet":
+        model = nn.Linear(ARCH_TO_NUM_FEATURES[args.arch][args.feature_mod], args.num_classes, bias=use_bias).cuda()
+    else:
+        model = nn.Linear(ARCH_TO_NUM_FEATURES[args.arch], args.num_classes, bias=use_bias).cuda()
+    if args.standardize_weights: # by default this should be true, setting the weights to zero is very important
+        # model.weight.data.normal_(mean=0.0, std=0.01)
+        # model.bias.data.zero_()
         model.weight.data.zero_()
+        # trunc_normal_(model.weight, std=0.01)
         if use_bias:
-            model.bias.data.add_(-10.)
+            # model[1].bias.data.add_(-10.)
+            model.bias.data.add(-10.)
     
     from timm.optim import Lamb, AdamW
     if args.optimizer == "sgd":
@@ -184,7 +167,29 @@ def setup_all(train_loader):
     elif args.optimizer == "lamb":
         optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=0.0)
     elif args.optimizer == "adam":
-        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=0.0)
+        # optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = transformers.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    elif args.optimizer == "pgd":
+
+        class ProjectedGradientDescent(Optimizer):
+            def __init__(self, params, lr=0.1, weight_decay=0, constraint=20):
+                defaults = dict(lr=lr, weight_decay=weight_decay, constraint=constraint)
+                super(ProjectedGradientDescent, self).__init__(params, defaults)
+
+            def step(self, closure=None):
+                for group in self.param_groups:
+                    for p in group['params']:
+                        if p.grad is None:
+                            continue
+                        
+                        # Perform regular gradient update
+                        d_p = p.grad
+                        p.data.add_(d_p, alpha=-group['lr'])
+
+                        # Project updated weights onto L2-ball of specified radius
+                        p.data.div_(max(1, p.data.norm() / group['constraint']))
+        optimizer = ProjectedGradientDescent(model.parameters(), lr=args.lr, constraint=20)
+
     privacy_engine = None
 
     if not args.disable_dp:
@@ -197,24 +202,25 @@ def setup_all(train_loader):
                 "sampling": "sampling",
             }
             clipping = clipping_dict[args.mode]
-            model, optimizer, train_loader = privacy_engine.make_private(
+            model, optimizer = privacy_engine.make_private(
                 module=model,
                 optimizer=optimizer,
-                data_loader=train_loader,
+                # data_loader=train_loader,
+                expected_batch_size=args.max_phys_bsz,
                 noise_multiplier=args.sigma,
                 max_grad_norm=args.max_per_sample_grad_norm,
                 clipping=clipping,
                 poisson_sampling=True,
             )
-            if args.augmult > -1 or args.num_classes>10:
-                print("WRAPPING DATA LOADER")
-                train_loader = wrap_data_loader(
-                    data_loader=train_loader, max_batch_size=MAX_PHYS_BSZ, optimizer=optimizer
-                )
+            # if args.augmult > -1 or args.num_classes>10:
+            #     print("WRAPPING DATA LOADER")
+            #     train_loader = wrap_data_loader(
+            #         data_loader=train_loader, max_batch_size=MAX_PHYS_BSZ, optimizer=optimizer
+            #     )
         else:
             privacy_engine = PrivacyEngine(
                 module=model,
-                batch_size=args.batch_size,
+                batch_size=args.max_phys_bsz,
                 sample_size=DATASET_TO_SIZE[args.dataset],
                 epochs=args.epochs,
                 max_grad_norm=args.max_per_sample_grad_norm,
@@ -230,15 +236,45 @@ def setup_all(train_loader):
             privacy_engine.attach(optimizer)
 
     sched = None
-    if args.sched:
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    # if args.sched:
+        # sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    # sched = transformers.get_constant_schedule_with_warmup(optimizer, num_warmup_steps=50)
+    import torch.optim as optim
+    class WarmupSchedule(optim.lr_scheduler._LRScheduler):
+        def __init__(self, optimizer, warmup_step, warmup_factor, lr, last_epoch=-1):
+            self.warmup_step = warmup_step
+            self.warmup_factor = warmup_factor
+            self.lr = lr
+            super(WarmupSchedule, self).__init__(optimizer, last_epoch)
+
+        def get_lr(self):
+            if self.last_epoch < self.warmup_step:
+                return [self.lr for _ in self.base_lrs]
+            return [base_lr * self.warmup_factor for base_lr in self.base_lrs]
+    class CooldownSchedule(optim.lr_scheduler._LRScheduler):
+        def __init__(self, optimizer, decay_step, decay_factor, lr, last_epoch=-1):
+            self.decay_step = decay_step
+            self.decay_factor = decay_factor
+            self.lr = lr
+            super(CooldownSchedule, self).__init__(optimizer, last_epoch)
+
+        def get_lr(self):
+            if self.last_epoch < self.decay_step:
+                return [self.lr for _ in self.base_lrs]
+            return [base_lr / self.decay_factor for base_lr in self.base_lrs]
+
+    if args.sched == '2':
+        sched = CooldownSchedule(optimizer, decay_step=40, decay_factor=2, lr=args.lr)
+    if args.sched == '1':
+        sched = WarmupSchedule(optimizer, warmup_step=40, warmup_factor=2, lr=args.lr)
     # swa_model = AveragedModel(model)
-    ema_avg = (
-        lambda averaged_model_parameter, model_parameter, num_averaged: 0.1
-        * averaged_model_parameter
-        + 0.9 * model_parameter
-    )
-    ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
+    # ema_avg = (
+    #     lambda averaged_model_parameter, model_parameter, num_averaged: 0.1
+    #     * averaged_model_parameter
+    #     + 0.9 * model_parameter
+    # )
+    # ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
+    ema_model = None
     return model, ema_model, optimizer, privacy_engine, sched, train_loader
 
 
@@ -265,36 +301,39 @@ def do_training(
     for epoch in range(1, args.epochs + 1):
         if sched is not None:
             sched.step()
-            wandb.log({"lr": sched.get_lr()})
+            # wandb.log({"lr": sched.get_lr()})
         train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
-        # raw_grads, noisy_grads, weights = extract_grads_weights(
-        #     model, raw_grads, noisy_grads, weights
-        # )
-        new_correct = test(
-            args,
-            {
-                "model": model,
-                "ema": ema_model,
-            },
-            args.device,
-            test_loader,
-        )
-        corrects.append(new_correct)
-        wandb.log({"test_acc": new_correct})
-        trigger_sync()
-        ema_model.update_parameters(model)
+        # only do test every 10 epochs, or at the end of training
+        if epoch % 10 == 0 or epoch == args.epochs:
+            new_correct = test(
+                args,
+                {
+                    "model": model,
+                    # "ema": ema_model,
+                },
+                args.device,
+                test_loader,
+            )
+            corrects.append(new_correct)
+            # wandb.log({"test_acc": new_correct})
+        # ema_model.update_parameters(model)
+    # extract weights from classifier
+    # weights = model[1].weight.data
+    weights = model.weight.data
+    # print norm of weights
+    print("NORM OF WEIGHTS", torch.norm(weights))        
     return (
         # torch.stack(raw_grads),
         # torch.stack(noisy_grads),
         # torch.stack(weights),
         None,
         None,
-        None,
+        weights,
         corrects,
     )
 
 
-def store_grads(all_noisy_grads, all_raw_grads, all_weights):
+def store_grads(all_weights):
     if args.store_grads:
         all_noisy_grads, all_raw_grads, all_weights = (
             torch.stack(all_noisy_grads),
@@ -314,7 +353,7 @@ def store_grads(all_noisy_grads, all_raw_grads, all_weights):
         )
         print(f"Saved grads to {f_loc}")
     elif args.store_weights:
-        final_weights = all_weights[-1][-1]
+        final_weights = all_weights[-1]
         f_dir = f"ckpts/{args.arch}/{args.dataset}"
         f_path = (
             f"/weights_{args.num_runs}_{args.epochs}_{int(args.lr)}_{int(args.epsilon)}"
@@ -331,17 +370,14 @@ def main():
     global len_test
     global n_accum_steps
     args = parse_args()
-    # args.max_phys_bsz = min(args.batch_size, args.max_phys_bsz)
-    # if args.batch_size == -1:
-    #     DATASET_SIZE = DATASET_TO_SIZE[args.dataset]
-    #     n_accum_steps = max(1, DATASET_SIZE // args.max_phys_bsz)
-    # else:
-    #     n_accum_steps = max(1, args.batch_size // args.max_phys_bsz)
+    args.max_phys_bsz = min(args.max_phys_bsz, args.batch_size)
+    n_accum_steps = max(1, np.ceil(args.batch_size / args.max_phys_bsz))
     print("GETTING DATASET")
     train_loader, test_loader = get_ds(args)
+    args.batch_size = args.max_phys_bsz
     len_test = len(test_loader.dataset)
-    wandb.init(project="baselines", entity="dp-finetuning")
-    wandb.config.update(args)
+    # wandb.init(project="baselines", entity="dp-finetuning")
+    # wandb.config.update(args)
     all_noisy_grads, all_raw_grads, all_weights, all_corrects = [], [], [], []
     best_accs = []
     for num_run in range(args.num_runs):
@@ -366,7 +402,7 @@ def main():
         all_weights.append(weights)
         all_corrects.append(corrects)
         best_accs.append(max(corrects))
-    # store_grads(all_noisy_grads, all_raw_grads, all_weights)
+    store_grads(all_weights)
 
     # print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
     # momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
@@ -389,8 +425,8 @@ def main():
     #     logged_epsilon = args.epsilon * privacy_engine.accountant.privacy_usage.max()
     # elif args.mode in ["sampling"]:
     #     logged_epsilon = privacy_engine.accountant.privacy_usage
-    wandb_dict.update({"epsilon": logged_epsilon})
-    wandb.log(wandb_dict)
+    # wandb_dict.update({"epsilon": logged_epsilon})
+    # wandb.log(wandb_dict)
 
 
 if __name__ == "__main__":
