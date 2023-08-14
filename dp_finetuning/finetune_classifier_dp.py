@@ -265,13 +265,13 @@ def setup_all(train_loader):
     if args.sched == '1':
         sched = WarmupSchedule(optimizer, warmup_step=40, warmup_factor=2, lr=args.lr)
     # swa_model = AveragedModel(model)
-    # ema_avg = (
-    #     lambda averaged_model_parameter, model_parameter, num_averaged: 0.1
-    #     * averaged_model_parameter
-    #     + 0.9 * model_parameter
-    # )
-    # ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
-    ema_model = None
+    ema_avg = (
+        lambda averaged_model_parameter, model_parameter, num_averaged: 0.1
+        * averaged_model_parameter
+        + 0.9 * model_parameter
+    )
+    ema_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
+    # ema_model = None
     return model, ema_model, optimizer, privacy_engine, sched, train_loader
 
 
@@ -306,14 +306,14 @@ def do_training(
                 args,
                 {
                     "model": model,
-                    # "ema": ema_model,
+                    "ema": ema_model,
                 },
                 args.device,
                 test_loader,
             )
             corrects.append(new_correct)
             # wandb.log({"test_acc": new_correct})
-        # ema_model.update_parameters(model)
+        ema_model.update_parameters(model)
     # extract weights from classifier
     # weights = model[1].weight.data
     weights = model.weight.data
@@ -398,33 +398,27 @@ def main():
         all_raw_grads.append(raw_grads)
         all_weights.append(weights)
         all_corrects.append(corrects)
-        best_accs.append(max(corrects))
+
+        best_accs.append(max(corrects)) # using the best run is possible via fully adaptive composition
     store_grads(all_weights)
 
-    # print("DOING FAKE TRAINING WITH MOMENTUM BUFFER")
-    # momentum_buffer = optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer']
-    # model._module.weight.data.add_(momentum_buffer, alpha=(-1. * args.lr)) # hardcode fake iterations
-    # optimizer.original_optimizer.state[optimizer.original_optimizer.param_groups[0]['params'][0]]['momentum_buffer'].mul_(args.momentum).add_(momentum_buffer)
-    # new_correct = test(args, {
-    #     "model": model,
-    # },
-    # args.device, test_loader)
-    # corrects.append(new_correct)
-
+    # The below code is commented out because it is not discussed in the main body of the paper; but it is present in the appendix.
+    # print("DOING ZERO-PRIVACY-COST TRAINING WITH MOMENTUM BUFFER")
+    # for _ in range(10): # these iterations have no privacy cost!
+    #     momentum_buffer = optimizer.state[optimizer.param_groups[0]['params'][0]]['momentum_buffer']
+    #     model.weight.data.add_(momentum_buffer, alpha=(-1. * args.lr)) # hardcode fake iterations
+    #     optimizer.state[optimizer.param_groups[0]['params'][0]]['momentum_buffer'].mul_(args.momentum).add_(momentum_buffer)
+    #     new_correct = test(args, {
+    #         "model": model,
+    #     },
+    #     args.device, test_loader)
+    #     corrects.append(new_correct)
     best_acc = np.mean(best_accs)
-    print(f"Best overall accuracy {best_acc:.2f}")
-    best_acc_std = np.std(best_accs)
-    wandb_dict = {"best_acc": best_acc, "best_acc_std": best_acc_std}
-    logged_epsilon = None
-    # if args.mode in ["vanilla"] and args.epsilon != 0:
-    #     logged_epsilon = privacy_engine.accountant.get_epsilon(delta=1e-5)
-    # elif args.mode in ["individual", "dpsgdfilter"]:
-    #     logged_epsilon = args.epsilon * privacy_engine.accountant.privacy_usage.max()
-    # elif args.mode in ["sampling"]:
-    #     logged_epsilon = privacy_engine.accountant.privacy_usage
-    # wandb_dict.update({"epsilon": logged_epsilon})
-    # wandb.log(wandb_dict)
-
+    print(f"Mean accuracy {best_acc:.2f}")
+    if args.num_runs > 1:
+        print("ALL ACCS", best_accs)
+        best_acc_std = np.std(best_accs)
+        print(f"Std accuracy {best_acc_std:.2f}")
 
 if __name__ == "__main__":
     torch.multiprocessing.set_sharing_strategy('file_system')

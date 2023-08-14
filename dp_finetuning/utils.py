@@ -17,7 +17,6 @@ import code
 from stl_cifar_style import STL10 as STL10_CIFAR
 from cifar10p1 import CIFAR10p1
 from cifar10c import CIFAR10C
-import models_vit
 
 
 class MyPdb(pdb.Pdb):
@@ -268,23 +267,22 @@ def parse_args():
     if args.batch_size == -1:
         args.batch_size = DATASET_TO_SIZE[args.dataset]
     args.num_classes = DATASET_TO_CLASSES[args.dataset]
+    if args.epsilon == 0.0:
+        args.sigma = 0
     if args.sigma == -1:
-        args.delta = 1 / DATASET_TO_SIZE[args.dataset]
-        if args.epsilon == 0.0:
-            args.sigma = 0
-        else:
-            # let the prv acct determine sigma for us
-            from prv_accountant.dpsgd import find_noise_multiplier
+        args.delta = 1 / (2 * DATASET_TO_SIZE[args.dataset])
+        # let the prv acct determine sigma for us
+        from prv_accountant.dpsgd import find_noise_multiplier
 
-            sampling_probability = args.batch_size / DATASET_TO_SIZE[args.dataset]
-            args.sigma = find_noise_multiplier(
-                sampling_probability=sampling_probability,
-                num_steps=int(args.epochs / sampling_probability),
-                target_epsilon=args.epsilon,
-                target_delta=args.delta,
-                eps_error=0.01,
-                mu_max=5000)
-            print("Using noise multiplier", args.sigma)
+        sampling_probability = args.batch_size / DATASET_TO_SIZE[args.dataset]
+        args.sigma = find_noise_multiplier(
+            sampling_probability=sampling_probability,
+            num_steps=int(args.epochs / sampling_probability),
+            target_epsilon=args.epsilon,
+            target_delta=args.delta,
+            eps_error=0.01,
+            mu_max=5000)
+        print("Using noise multiplier", args.sigma)
     for arg in vars(args):
         print(" {} {}".format(arg, getattr(args, arg) or ""))
     return args
@@ -679,6 +677,7 @@ def load_pretrained_vit(args):
     from util.pos_embed import interpolate_pos_embed
     
     global_pool = True
+    import models_vit
     model = models_vit.__dict__[args.arch](
         num_classes=1000,
         global_pool=global_pool,
