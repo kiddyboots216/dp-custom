@@ -2,13 +2,11 @@ import os
 
 import torch
 import numpy as np
-# import wandb
 import torch.nn as nn
 from torch.optim import Optimizer
 from tqdm import tqdm
 
 # from opacus.utils.batch_memory_manager import wrap_data_loader
-from fastDP import PrivacyEngine
 from utils import (
     parse_args,
     get_ds,
@@ -121,8 +119,6 @@ def best_correct(test_stats):
 def print_test_stats(test_stats):
     for key, val in test_stats.items():
         print(f"Test Set: {key} : {val:.4f}")
-        # wandb.log({key: val})
-
 
 def test(args, model_dict, device, test_loader):
     model_dict = get_classifier(model_dict)
@@ -191,7 +187,8 @@ def setup_all(train_loader):
     privacy_engine = None
 
     if not args.disable_dp:
-        if False:
+        if args.privacy_engine == "opacus":
+            from opacus import PrivacyEngine
             privacy_engine = PrivacyEngine(secure_mode=args.secure_rng, accountant="gdp")
             clipping_dict = {
                 "vanilla": "flat",
@@ -200,22 +197,23 @@ def setup_all(train_loader):
                 "sampling": "sampling",
             }
             clipping = clipping_dict[args.mode]
-            model, optimizer = privacy_engine.make_private(
+            model, optimizer, _ = privacy_engine.make_private(
                 module=model,
                 optimizer=optimizer,
-                # data_loader=train_loader,
-                expected_batch_size=args.max_phys_bsz,
+                data_loader=train_loader,
                 noise_multiplier=args.sigma,
                 max_grad_norm=args.max_per_sample_grad_norm,
                 clipping=clipping,
                 poisson_sampling=True,
             )
+            # IF YOU RUN OUT OF MEMORY PLEASE DO NOT USE OPACUS IT REQUIRES SOME CHANGES TO THE CODE
             # if args.augmult > -1 or args.num_classes>10:
             #     print("WRAPPING DATA LOADER")
             #     train_loader = wrap_data_loader(
             #         data_loader=train_loader, max_batch_size=MAX_PHYS_BSZ, optimizer=optimizer
             #     )
-        else:
+        elif args.privacy_engine == "fastDP":
+            from fastDP import PrivacyEngine
             privacy_engine = PrivacyEngine(
                 module=model,
                 batch_size=args.max_phys_bsz,
@@ -298,7 +296,6 @@ def do_training(
     for epoch in range(1, args.epochs + 1):
         if sched is not None:
             sched.step()
-            # wandb.log({"lr": sched.get_lr()})
         train_loss = train(args, model, args.device, train_loader, optimizer, privacy_engine, epoch)
         # only do test every 10 epochs, or at the end of training
         if epoch % 10 == 0 or epoch == args.epochs:
@@ -312,7 +309,6 @@ def do_training(
                 test_loader,
             )
             corrects.append(new_correct)
-            # wandb.log({"test_acc": new_correct})
         ema_model.update_parameters(model)
     # extract weights from classifier
     # weights = model[1].weight.data
@@ -373,8 +369,6 @@ def main():
     train_loader, test_loader = get_ds(args)
     args.batch_size = args.max_phys_bsz
     len_test = len(test_loader.dataset)
-    # wandb.init(project="baselines", entity="dp-finetuning")
-    # wandb.config.update(args)
     all_noisy_grads, all_raw_grads, all_weights, all_corrects = [], [], [], []
     best_accs = []
     for num_run in range(args.num_runs):

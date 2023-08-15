@@ -5,9 +5,12 @@ To quickly reproduce results for DP fine-tuning on CIFAR10, just install;
   - torchvision
   - timm
   - fastdp from https://github.com/awslabs/fast-differential-privacy (preferred to opacus for a number of reasons)
+  - opacus (not preferred)
   - tqdm
 
-And then just cd into dp_finetuning and run 'python finetune_classifier_dp.py' 
+And then just cd into dp_finetuning and run 'python finetune_classifier_dp.py'. For the accounting, please also install the below library (with pip) and pass `sigma=-1`;
+
+  - prv_accountant
 
 For more general experiment reproduction, run the following command:
 
@@ -21,7 +24,7 @@ python {script}.py\
     --arch ${5}\
 ```
 
-For conventional CV experiments (ImageNet, CIFAR10, CIFAR100, FashionMNIST, EMNIST, MNIST, STL10, SVHN) `{script} = finetune_classifier_dp`.
+For conventional CV experiments (ImageNet, CIFAR10, CIFAR100, FashionMNIST, EMNIST, MNIST, STL10, SVHN) `{script} = finetune_classifier_dp`. If there are any errors during extracting features please raise a comment to the authors -this 
 
 For OOD experiments in Wilds (waterbirds, fmow, domainnet, camelyon) `{script} = wilds_finetune_classifier_dp` after following directions in the cited papers to download and split the datasets accordingly.
 

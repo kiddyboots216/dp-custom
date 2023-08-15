@@ -14,11 +14,6 @@ from tqdm import tqdm
 import pdb
 import code
 
-from stl_cifar_style import STL10 as STL10_CIFAR
-from cifar10p1 import CIFAR10p1
-from cifar10c import CIFAR10C
-
-
 class MyPdb(pdb.Pdb):
     def do_interact(self, arg):
         code.interact("*interactive*", local=self.curframe_locals)
@@ -251,6 +246,13 @@ def parse_args():
         type=str,
         default="",
         help="If specified with --overwrite, overwritten features will be written to this path. Otherwise, features will be loaded from the path ending with feature_mod, e.g., train{feature_mod}.npy"
+    )
+    parser.add_argument(
+        "--privacy_engine",
+        type=str,
+        default="fastDP",
+        choices=["fastDP", "opacus"],
+        help="what privacy engine to use"
     )
     # parser.add_argument(
     #     "--weight_avg_mode",
@@ -857,6 +859,7 @@ def get_ds(args):
         return train_loader, test_loader
     elif args.dataset in ["STL10_CIFAR"]:
         print("Loading STL10_CIFAR")
+        from stl_cifar_style import STL10 as STL10_CIFAR
         STL_CIFAR_dataset = STL10_CIFAR(
             root="/data/nvme/$USER/datasets",
             split="test",
@@ -878,6 +881,7 @@ def get_ds(args):
         return None, test_loader, None, None  # no train loader
     elif args.dataset in ["CIFAR10p1"]:
         print("Loading CIFAR10p1")
+        from cifar10p1 import CIFAR10p1
         CIFAR10p1_dataset = CIFAR10p1(
             root="/home/$USER/CIFAR-10.1/datasets/",  # download from https://github.com/modestyachts/CIFAR-10.1
             split="test",
@@ -898,6 +902,7 @@ def get_ds(args):
         return None, test_loader, None, None  # no train loader
     elif args.dataset in ["CIFAR10C"]:
         print("Loading CIFAR10C")
+        from cifar10c import CIFAR10C
         CIFAR10C_dataset = CIFAR10C(
             root="/data/$USER/datasets/CIFAR10C",
             corruption="gaussian_noise",
