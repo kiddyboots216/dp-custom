@@ -133,22 +133,49 @@ def setup_all(train_loader):
     elif args.optimizer == "adam":
         optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    privacy_engine = PrivacyEngine(
-        module=model,
-        batch_size=args.max_phys_bsz,
-        sample_size=DATASET_TO_SIZE[args.dataset],
-        epochs=args.epochs,
-        max_grad_norm=args.max_per_sample_grad_norm,
-        noise_multiplier=args.sigma,
-        target_epsilon=args.epsilon,
-        target_delta=args.delta,
-        accounting_mode="glw",
-        clipping_fn="Abadi",
-        clipping_mode="MixOpt",
-        clipping_style="all-layer",
-        loss_reduction="mean",
-    )
-    privacy_engine.attach(optimizer)
+    if args.privacy_engine == "opacus": # PLEASE DON'T USE OPACUS IT MIGHT ERROR
+            from opacus import PrivacyEngine
+            privacy_engine = PrivacyEngine(secure_mode=args.secure_rng, accountant="rdp") # we don't actually use any accounting from opacus
+            clipping_dict = {
+                "vanilla": "flat",
+                "individual": "budget",
+                "dpsgdfilter": "filter",
+                "sampling": "sampling",
+            }
+            clipping = clipping_dict[args.mode]
+            model, optimizer, _ = privacy_engine.make_private(
+                module=model,
+                optimizer=optimizer,
+                data_loader=train_loader,
+                noise_multiplier=args.sigma,
+                max_grad_norm=args.max_per_sample_grad_norm,
+                clipping=clipping,
+                poisson_sampling=True,
+            )
+            # IF YOU RUN OUT OF MEMORY PLEASE DO NOT USE OPACUS IT REQUIRES SOME CHANGES TO THE CODE
+            # if args.augmult > -1 or args.num_classes>10:
+            #     print("WRAPPING DATA LOADER")
+            #     train_loader = wrap_data_loader(
+            #         data_loader=train_loader, max_batch_size=MAX_PHYS_BSZ, optimizer=optimizer
+            #     )
+    elif args.privacy_engine == "fastDP":
+        from fastDP import PrivacyEngine
+        privacy_engine = PrivacyEngine(
+            module=model,
+            batch_size=args.max_phys_bsz,
+            sample_size=DATASET_TO_SIZE[args.dataset],
+            epochs=args.epochs,
+            max_grad_norm=args.max_per_sample_grad_norm,
+            noise_multiplier=args.sigma,
+            target_epsilon=args.epsilon,
+            target_delta=args.delta,
+            accounting_mode="glw",
+            clipping_fn="Abadi",
+            clipping_mode="MixOpt",
+            clipping_style="all-layer",
+            loss_reduction="mean",
+        )
+        privacy_engine.attach(optimizer)
 
     sched = None
     ema_avg = (

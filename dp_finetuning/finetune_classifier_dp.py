@@ -189,7 +189,7 @@ def setup_all(train_loader):
     if not args.disable_dp:
         if args.privacy_engine == "opacus":
             from opacus import PrivacyEngine
-            privacy_engine = PrivacyEngine(secure_mode=args.secure_rng, accountant="gdp")
+            privacy_engine = PrivacyEngine(secure_mode=args.secure_rng, accountant="rdp") # we don't actually use any accounting from opacus
             clipping_dict = {
                 "vanilla": "flat",
                 "individual": "budget",
