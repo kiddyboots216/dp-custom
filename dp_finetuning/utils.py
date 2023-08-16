@@ -728,6 +728,7 @@ def get_ds(args):
             "We cannot download a dataset/model here \n Run python utils.py to download things"
         )
     if args.dataset in ["ImageNet"]:
+        # A LOT OF THE CODE IN THIS BLOCK IS FOR A DIFFERENT SUBMISSION, WE APOLOGIZE FOR THE UNTIDINESS
         # most models finally require squared images, so h and w are equal
         # assert ARCH_TO_INTERP_SIZE[args.arch] == fe.h, f"Interpolation size {ARCH_TO_INTERP_SIZE[args.arch]} is not equal to {fe.h} h of the model"
         def get_feature_path(base_path, feature_mod, default_suffix=".npy"):
@@ -829,23 +830,23 @@ def get_ds(args):
         #     # Concatenate all the normalized chunks back together
         #     return torch.cat(normalized_splits, dim=1)
         
-        def preprocess_features_tensor(features_tensor, desired_norm=args.feature_norm):
-            # Normalize feature vectors
-            norms = torch.norm(features_tensor, dim=1, keepdim=True)
-            target_norm = norms.mean() if desired_norm == -1 else desired_norm
-            normalized_features = (features_tensor / norms) * target_norm
+        # def preprocess_features_tensor(features_tensor, desired_norm=args.feature_norm):
+        #     # Normalize feature vectors
+        #     norms = torch.norm(features_tensor, dim=1, keepdim=True)
+        #     target_norm = norms.mean() if desired_norm == -1 else desired_norm
+        #     normalized_features = (features_tensor / norms) * target_norm
             
-            # Compute the mean of the normalized features
-            mean_vector = torch.mean(normalized_features, dim=0)
+        #     # Compute the mean of the normalized features
+        #     mean_vector = torch.mean(normalized_features, dim=0)
             
-            # Subtract the mean from the normalized features
-            translated_features = normalized_features - mean_vector
+        #     # Subtract the mean from the normalized features
+        #     translated_features = normalized_features - mean_vector
             
-            return translated_features
+        #     return translated_features
 
-        if args.feature_norm != 0:  # Adjusted condition to cater for -1 as a valid input
-            features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm)
-            features_test = preprocess_features_tensor(features_test, desired_norm=args.feature_norm)
+        # if args.feature_norm != 0:  # Adjusted condition to cater for -1 as a valid input
+        #     features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm)
+        #     features_test = preprocess_features_tensor(features_test, desired_norm=args.feature_norm)
 
 
         ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
@@ -1002,6 +1003,7 @@ def get_ds(args):
         )
         test_loader = torch.utils.data.DataLoader(test_ds, batch_size=4, shuffle=False)
     else:
+        # THIS IS HARDCODED TO WORK FOR THE GITHUB FEATURES
         extracted_train_path_part_1 = extracted_path + "/part1_train.npy"
         extracted_train_path_part_2 = extracted_path + "/part2_train.npy"
         labels_train_path = extracted_path + "/_train_labels.npy"
@@ -1069,7 +1071,7 @@ def get_ds(args):
     else:
         if not os.path.exists(extracted_train_path):
             # model = create_model_from_pretrained(args)
-            extract_features(args, images_train, images_test)
+            extract_features(args, images_train, images_test) # if you get any errors around here it may because I had to fiddle with things to upload the extracted features to GitHub
         x_train = np.load(extracted_train_path)
     features_train = torch.from_numpy(x_train)
     labels_train = torch.from_numpy(np.load(labels_train_path))

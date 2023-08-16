@@ -21,6 +21,10 @@ args.batch_size = args.max_phys_bsz
 eps_1 = 0.01
 eps_2 = 0.1
 eps_f = 0.97 
+# here are some other acceptable values that you can try out to see what happens when we give more privacy budget to the initial runs
+# eps_1 = 0.05
+# eps_2 = 0.1
+# eps_f = 0.96 
 eps_err = 0.001 # error tolerance for computing sigma; you can make this larger if it's taking too long
 
 eta_max = 1 * DATASET_TO_SIZE[args.dataset] / 50000 # original linear scaling rule; we've arbitrarily chosen the dataset size for CIFAR as the reference. For ImageNet this will set eta_max to ~25. Note that this assumes full-batch.
@@ -241,7 +245,7 @@ mech = GaussianMechanism(1)
 mech.mu = mu
 
 _, eps, _ = PRVAccountant(mech, max_self_compositions=1, eps_error=eps_err, # this computes a lower bound for eps, estimate and upper bound, and we use the estimate, you can change this to use the upper bound if you want 
-                                  delta_error=1e-6).compute_epsilon(args.delta, 1)
+                                  delta_error=1e-12).compute_epsilon(args.delta, 1)
 
 print("Total privacy cost for final accuracy including the privacy cost of hyperparameter search ", eps)
 assert eps < 1.0, "Privacy cost for hyperparameter search is too high! You've done something wrong."
