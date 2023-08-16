@@ -61,17 +61,17 @@ def test(args, model_dict, device, test_loader):
     test_stats.update({key + "_acc": 0 for key in model_dict.keys()})
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
-        for data, target in tqdm(test_loader):
+        for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             test_stats = do_test(model_dict, data, target, criterion, test_stats)
-    print_test_stats(test_stats)
+    # print_test_stats(test_stats)
     return best_correct(test_stats)
 
 def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
     model.train()
     criterion = nn.CrossEntropyLoss()
     losses = []
-    for epoch_step, (data, target, _) in enumerate(tqdm(train_loader)):
+    for epoch_step, (data, target, _) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         loss = criterion(model(data), target)
         loss.backward()
@@ -80,7 +80,7 @@ def train(args, model, device, train_loader, optimizer, privacy_engine, epoch):
             optimizer.zero_grad()
             losses.append(loss.detach().cpu().numpy())
 
-    print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
+    # print(f"Train Epoch: {epoch} \t Loss: {np.mean(losses):.6f}")
     return np.mean(losses)
 
 def do_training(

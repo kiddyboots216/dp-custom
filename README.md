@@ -1,5 +1,5 @@
 # dp-custom
-To quickly reproduce results for DP fine-tuning on CIFAR10, just install;
+To quickly reproduce results for DP fine-tuning on CIFAR10, just install the following libraries via pip;
   - pytorch
   - numpy
   - torchvision
@@ -7,10 +7,11 @@ To quickly reproduce results for DP fine-tuning on CIFAR10, just install;
   - fastdp from https://github.com/awslabs/fast-differential-privacy (preferred to opacus for a number of reasons)
   - opacus (not preferred)
   - tqdm
-
-And then just cd into dp_finetuning and run 'python finetune_classifier_dp.py'. For the accounting, please also install the below library (with pip) and pass `sigma=-1`;
-
   - prv_accountant
+
+And then just cd into dp_finetuning and run `python finetune_classifier_dp.py`. To run the accounting (which can be quite slow) pass `sigma=-1`. There are a number of command-line arguments as described below.
+
+To run hyperparameter tuning with the linear scaling rule, run `python linear_scaling.py`.
 
 For more general experiment reproduction, run the following command:
 

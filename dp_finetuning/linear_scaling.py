@@ -21,6 +21,7 @@ args.batch_size = args.max_phys_bsz
 eps_1 = 0.01
 eps_2 = 0.1
 eps_f = 0.97 
+eps_err = 0.001 # error tolerance for computing sigma; you can make this larger if it's taking too long
 
 eta_max = 1 * DATASET_TO_SIZE[args.dataset] / 50000 # original linear scaling rule; we've arbitrarily chosen the dataset size for CIFAR as the reference. For ImageNet this will set eta_max to ~25. Note that this assumes full-batch.
 t_max = 150 # feel free to expand this as large as you like if you have the resources, we didn't want to wait too long for the experiment to finish
@@ -28,8 +29,8 @@ max_r = int(eta_max * t_max)
 n_runs = 3 # number of runs for each hyperparameter setting, you can increase this if you want
 rtol = 0.05 # tolerance when sampling r
 
-valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05)))
-valid_ts = np.arange(5, t_max, 5)
+valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05))) # granularity of the grid is directly tied to rtol so if you make this less granular you will need to increase rtol
+valid_ts = np.arange(5, t_max, 5) # similar comment as above
 
 searched_etas = []
 searched_ts = []
@@ -41,9 +42,9 @@ etas = []
 ts = []
 
 while len(etas) < n_runs:
-    r = np.random.choice(np.arange(1, int(max_r//10), 1)) # hardcoded for current exp
+    r = np.random.choice(np.arange(1, int(max_r//10), 1)) # if you have a prior on the value of r you can adjust this, an example prior is that your runs for eps_1 shouldn't use too large a value of r
     found = False
-    for _ in range(1000): # Attempt 1000 times to find a valid pair
+    for _ in range(1000): # Attempt 1000 times to find a valid decomposition
         eta = np.random.choice(valid_etas)
         t = np.random.choice(valid_ts)
         if abs(eta * t - r) <= rtol * r:
@@ -52,12 +53,11 @@ while len(etas) < n_runs:
             found = True
             break
     if not found:
-        print(f"Failed to find a valid pair for r = {r}. Retrying...if this happens too much you probably need to decrease the granularity of r")
+        print(f"Failed to find a valid decomposition for r = {r}. Retrying...if this happens too much you probably need to decrease the granularity of r")
 
 sigmas = []
 
 # compute sigmas for corresponding ts assuming eps_1 = 0.01 (modify as necessary)
-eps_1 = 0.01
 eps_minis = [eps_1] * n_runs
 for t, eps in zip(ts, eps_minis):
     sigma = find_noise_multiplier(
@@ -65,7 +65,7 @@ for t, eps in zip(ts, eps_minis):
             num_steps=int(t),
             target_epsilon=eps,
             target_delta=args.delta, # don't worry about this, we're not doing basic composition anyways
-            eps_error=0.001,
+            eps_error=eps_err,
             mu_max=5000)
     sigmas.append(sigma)
 
@@ -104,9 +104,9 @@ etas = []
 ts = []
 min_r = int(best_eta_1 * best_t_1)
 while len(etas) < n_runs:
-    r = np.random.choice(np.arange(min_r, int(max_r//5), 1)) # hardcoded
+    r = np.random.choice(np.arange(min_r, int(max_r//2), 1)) # if you have a prior on the value of r you can adjust this, an example prior is that your runs for eps_2 shouldn't use too large a value of r
     found = False
-    for _ in range(1000): # Attempt 1000 times to find a valid pair
+    for _ in range(1000): # Attempt 1000 times to find a valid decomposition
         eta = np.random.choice(valid_etas)
         t = np.random.choice(valid_ts)
         if abs(eta * t - r) <= rtol * r:
@@ -115,7 +115,7 @@ while len(etas) < n_runs:
             found = True
             break
     if not found:
-        print(f"Failed to find a valid pair for r = {r}. Retrying...if this happens too much you probably need to decrease the granularity of r")
+        print(f"Failed to find a valid decomposition for r = {r}. Retrying...if this happens too much you probably need to decrease the granularity of r")
 
 sigmas = []
 
@@ -127,7 +127,7 @@ for t, eps in zip(ts, eps_minis):
             num_steps=int(t),
             target_epsilon=eps,
             target_delta=args.delta, # don't worry about this, we're not doing basic composition anyways
-            eps_error=0.001,
+            eps_error=eps_err,
             mu_max=5000)
     sigmas.append(sigma)
 
@@ -208,7 +208,7 @@ config = {
             num_steps=int(final_t),
             target_epsilon=eps_f,
             target_delta=args.delta, # don't worry about this, we're not doing basic composition anyways
-            eps_error=0.001,
+            eps_error=eps_err,
     mu_max=5000)
 }
 args.lr = config['lr']
@@ -223,10 +223,10 @@ searched_accs.append(final_acc)
 searched_etas.append(config['lr'])
 searched_ts.append(config['t'])
 searched_sigmas.append(config['sigma'])
-print("All searched etas: {}".format(searched_etas))
-print("All searched ts: {}".format(searched_ts))
-print("All searched sigmas: {}".format(searched_sigmas))
-print("All searched accs: {}".format(searched_accs))
+print("All searched etas:", ', '.join([f"{eta:.2f}" for eta in searched_etas]))
+print("All searched ts:", searched_ts)
+print("All searched sigmas:", ', '.join([f"{sigma:.3f}" for sigma in searched_sigmas]))
+print("All searched accs:", searched_accs)
 # compute mus for hyperparameter search
 mus = []
 for t, sigma in zip(searched_ts, searched_sigmas):
@@ -240,7 +240,7 @@ mech = GaussianMechanism(1)
 # override mu 
 mech.mu = mu
 
-_, eps, _ = PRVAccountant(mech, max_self_compositions=1, eps_error=0.001, # this computes a lower bound for eps, estimate and upper bound, and we use the estimate, you can change this to use the upper bound if you want 
+_, eps, _ = PRVAccountant(mech, max_self_compositions=1, eps_error=eps_err, # this computes a lower bound for eps, estimate and upper bound, and we use the estimate, you can change this to use the upper bound if you want 
                                   delta_error=1e-6).compute_epsilon(args.delta, 1)
 
 print("Total privacy cost for final accuracy including the privacy cost of hyperparameter search ", eps)
