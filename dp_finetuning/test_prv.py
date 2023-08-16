@@ -15,10 +15,10 @@ The final printed output is (lower bound on epsilon, estimate of epsilon, upper 
 """
 
 ts = [10, 75, 50, 25, 50, 45, 100] # change this however you want
-# below are hardcoded values, you might also try eps_1 = 0.01, eps_2 = 0.1, eps_f = 0.97, etc.
-eps_1 = 0.05
-eps_2 = 0.10
-eps_f = 0.96
+# below are hardcoded values, you might also try eps_1 = 0.05, eps_2 = 0.1, eps_f = 0.97, or just tune these however you want.
+eps_1 = 0.01
+eps_2 = 0.1
+eps_f = 0.97
 eps_values = [eps_1] * 3 + [eps_2] * 3 + [eps_f]
 
 find_noise_with_common_params = partial(
