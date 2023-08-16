@@ -457,7 +457,7 @@ def get_extract_features_from_model(model, dl, args, max_count=10**9):
             break
     return torch.cat(feat), torch.cat(labels)
 
-def extract_features(args, images_train=None, images_test=None):
+def extract_features(args, images_train=None, images_test=None, labels_train=None, labels_test=None):
     ### GET PATH
     abbrev_arch = args.arch
     extracted_path = (
@@ -469,6 +469,10 @@ def extract_features(args, images_train=None, images_test=None):
     )
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
+    labels_train_path = extracted_path + "/_train_labels.npy"
+    labels_test_path = extracted_path + "/_test_labels.npy"
+    np.save(labels_train_path, labels_train)
+    np.save(labels_test_path, labels_test)
 
     ### DO EXTRACTION
 
@@ -720,6 +724,8 @@ def get_ds(args):
     )
     extracted_train_path = extracted_path + "/_train.npy"
     extracted_test_path = extracted_path + "/_test.npy"
+    labels_train_path = extracted_path + "/_train_labels.npy"
+    labels_test_path = extracted_path + "/_test_labels.npy"
     # fe = timmFe(args.arch).cuda() # timm models based feature extractor
     
     kwargs = {"num_workers": args.workers, "pin_memory": True}
@@ -873,7 +879,7 @@ def get_ds(args):
         labels_test = torch.tensor(STL_CIFAR_dataset.labels)
         if not os.path.exists(extracted_path):
             extract_features(
-                args, images_train=None, images_test=images_test
+                args, images_train=None, images_test=images_test, labels_train=None, labels_test=labels_test
             )  # don't want to extract train features
         x_test = np.load(extracted_test_path)
         features_test = torch.from_numpy(x_test)
@@ -894,7 +900,7 @@ def get_ds(args):
         labels_test = torch.tensor(CIFAR10p1_dataset._labels)
         if not os.path.exists(extracted_path):
             extract_features(
-                args, images_train=None, images_test=images_test
+                args, images_train=None, images_test=images_test, labels_train=None, labels_test=labels_test
             )  # don't want to extract train features
         x_test = np.load(extracted_test_path)
         features_test = torch.from_numpy(x_test)
@@ -913,7 +919,7 @@ def get_ds(args):
         images_test = torch.tensor(CIFAR10C_dataset._xs.transpose(0, 3, 1, 2)) / 255.0
         labels_test = CIFAR10C_dataset._ys
         if not os.path.exists(extracted_path):
-            extract_features(args, images_train=None, images_test=images_test)
+            extract_features(args, images_train=None, images_test=images_test, labels_train=None, labels_test=labels_test)
         x_test = np.load(extracted_test_path)
         features_test = torch.from_numpy(x_test)
         ds_test = TensorDataset(features_test, labels_test)
@@ -1071,7 +1077,7 @@ def get_ds(args):
     else:
         if not os.path.exists(extracted_train_path):
             # model = create_model_from_pretrained(args)
-            extract_features(args, images_train, images_test) # if you get any errors around here it may because I had to fiddle with things to upload the extracted features to GitHub
+            extract_features(args, images_train, images_test, labels_train, labels_test) # if you get any errors around here it may because I had to fiddle with things to upload the extracted features to GitHub
         x_train = np.load(extracted_train_path)
     features_train = torch.from_numpy(x_train)
     labels_train = torch.from_numpy(np.load(labels_train_path))

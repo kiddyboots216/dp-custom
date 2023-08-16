@@ -106,7 +106,7 @@ configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts
 r_1, _ = launch_config(configs, eps_1)
 
 # Second hyperparameter search
-etas, ts = decompose_r(r_1, int(max_r//2), valid_etas, valid_ts, n_runs, rtol)
+etas, ts = decompose_r(r_1, int(max_r//5), valid_etas, valid_ts, n_runs, rtol)
 sigmas = compute_sigma(ts, [eps_2] * n_runs)
 configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
 r_2, _ = launch_config(configs, eps_2)
@@ -156,5 +156,5 @@ mech.mu = mu
 _, eps, _ = PRVAccountant(mech, max_self_compositions=1, eps_error=eps_err, # this computes a lower bound for eps, estimate and upper bound, and we use the estimate, you can change this to use the upper bound if you want 
                                   delta_error=1e-12).compute_epsilon(args.delta, 1)
 
-print("Total privacy cost for final accuracy including the privacy cost of hyperparameter search ", eps)
+print(f"Total privacy cost for final accuracy including the privacy cost of hyperparameter search {eps:.3f}")
 assert eps < 1.0, "Privacy cost for hyperparameter search is too high! You've done something wrong."
