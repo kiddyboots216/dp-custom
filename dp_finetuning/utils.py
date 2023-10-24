@@ -610,8 +610,7 @@ def load_pretrained_vit(args):
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), num_classes=1000,
         num_layers=12,)
-    # finetune_path = "path/to/vit/checkpoint" # replace this with your path
-    finetune_path = "ckpt-vip-syn-base.pth"
+    finetune_path = "path/to/vit/checkpoint" # replace this with your path
     checkpoint = torch.load(finetune_path, map_location='cpu')
     print("Load pre-trained checkpoint from: %s" % finetune_path)
     checkpoint_model = checkpoint['model']
