@@ -24,13 +24,19 @@ eps_f = 0.97
 # eps_2 = 0.2
 # eps_f = 0.9
 eps_err = 0.001 # error tolerance for computing sigma; you can make this larger if it's taking too long
-eta_max = 1 * DATASET_TO_SIZE[args.dataset] / 50000 # original linear scaling rule; we've arbitrarily chosen the dataset size for CIFAR as the reference. For ImageNet this will set eta_max to ~25. Note that this assumes full-batch.
-t_max = 150 # feel free to expand this as large as you like if you have the resources, we didn't want to wait too long for the experiment to finish
-max_r = int(eta_max * t_max)
 n_runs = 3 # number of runs for each hyperparameter setting, you can increase this if you want
 rtol = 0.05 # tolerance when sampling r
-valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05))) # granularity of the grid is directly tied to rtol so if you make this less granular you will need to increase rtol
-valid_ts = np.arange(5, t_max, 5) # similar comment as above
+# valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05))) # granularity of the grid is directly tied to rtol so if you make this less granular you will need to increase rtol
+valid_etas = np.power(10, np.arange(-5, 2, 0.15))
+t_max = 150 # feel free to expand this as large as you like if you have the resources, we didn't want to wait too long for the experiment to finish
+t_min = 5 # minimum value of t, you can increase this if you want
+valid_ts = np.arange(t_min, t_max, 5) # similar comment as above
+base_eta_max = valid_etas.max()
+eta_max = base_eta_max * DATASET_TO_SIZE[args.dataset] / 50000 # original linear scaling rule; we've arbitrarily chosen the dataset size for CIFAR as the reference. For ImageNet this will set eta_max to ~25. Note that this assumes full-batch.
+base_eta_min = valid_etas.min()
+eta_min = base_eta_min * DATASET_TO_SIZE[args.dataset] / 50000 
+min_r = eta_min * t_min
+max_r = eta_max * t_max
 
 # Main code logic
 args.max_phys_bsz = min(args.max_phys_bsz, args.batch_size)
@@ -59,7 +65,7 @@ def launch_config(configs, epsilon):
         run_args.epochs = config['t']
         run_args.sigma = config['sigma']
         run_args.epsilon = epsilon
-        print(f"Launching run with lr {config['lr']:.2f}, t {config['t']}, sigma {config['sigma']:.2f}")
+        print(f"Launching run with lr {config['lr']:.5f}, t {config['t']}, sigma {config['sigma']:.2f}")
         acc = launch_run(run_args, train_loader, test_loader)
         config['acc'] = acc
         searched_etas.append(config['lr'])
@@ -94,67 +100,82 @@ def decompose_r(min_r, max_r, valid_etas, valid_ts, n_rets, rtol, n_retries=1000
             print(f"Failed to find a valid decomposition for r = {r}. Retrying...if this happens too much you probably need to decrease the granularity of r")
     return etas, ts
 
+def rand_eta_t(valid_etas, valid_ts, n_runs):
+    etas = np.random.choice(valid_etas, n_runs)
+    ts = np.random.choice(valid_ts, n_runs)
+    return etas, ts
+
 searched_etas = []
 searched_ts = []
 searched_sigmas = []
 searched_accs = []
 
-# First hyperparameter search
-etas, ts = decompose_r(1, int(max_r//10), valid_etas, valid_ts, n_runs, rtol)
-sigmas = compute_sigma(ts, [eps_1] * n_runs)
-configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
-r_1, _ = launch_config(configs, eps_1)
+if __name__ == "__main__":
+    # First hyperparameter search
+    # etas, ts = decompose_r(min_r, int(max_r//10), valid_etas, valid_ts, n_runs, rtol)
+    # etas, ts = rand_eta_t(valid_etas, valid_ts, n_runs)
+    # sigmas = compute_sigma(ts, [eps_1] * n_runs)
+    # etas = valid_etas 
+    # ts = [1] * len(etas)
+    # sigmas = [255.7393275537945] * len(etas)
+    # configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
+    # r_1, _ = launch_config(configs, eps_1)
+    r_1 = 0.0012589254117941816
 
-# Second hyperparameter search
-etas, ts = decompose_r(r_1, int(max_r//5), valid_etas, valid_ts, n_runs, rtol)
-sigmas = compute_sigma(ts, [eps_2] * n_runs)
-configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
-r_2, _ = launch_config(configs, eps_2)
+    # Second hyperparameter search
+    # etas, ts = decompose_r(r_1, int(max_r//5), valid_etas, valid_ts, n_runs, rtol)
+    n_runs = 11
+    eps_2 = 0.05
+    # etas = np.random.choice(valid_etas[14:], n_runs)
+    # ts = np.random.choice(valid_ts[1:], n_runs)
+    # sigmas = compute_sigma(ts, [eps_2] * n_runs)
+    # configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
+    # r_2, _ = launch_config(configs, eps_2)
+    r_2 = 12.31296626212616
+    # now compute linear interpolation 
+    xs = [eps_1, eps_2]
+    ys = [r_1, r_2]
+    print(f"Doing linear interpolation with eps {xs}, rs {ys}")
+    m, b = np.polyfit(xs, ys, 1)
 
-# now compute linear interpolation 
-xs = [eps_1, eps_2]
-ys = [r_1, r_2]
-print(f"Doing linear interpolation with eps {xs}, rs {ys}")
-m, b = np.polyfit(xs, ys, 1)
+    # find values in valid_etas, valid_ts that are within some rtol of the extrapolated value
+    r_extrap = m * eps_f + b
 
-# find values in valid_etas, valid_ts that are within some rtol of the extrapolated value
-r_extrap = m * eps_f + b
+    print(f"Extrapolated value of r: {r_extrap:.2f}")
+    if r_extrap > max_r: # if we extrapolate outside what our prior tells us is a reasonable set of r, just use the max values
+        print("Extrapolated value of r is outside of range, using max values")
+        final_eta = eta_max
+        final_t = t_max
+    else:
+        final_eta, final_t = decompose_r(int(r_extrap), int(r_extrap)+1, valid_etas, valid_ts, 1, rtol, n_retries=1000)
+        final_eta = final_eta[0]
+        final_t = final_t[0] # Assuming decompose_r returns lists
 
-print(f"Extrapolated value of r: {r_extrap:.2f}")
-if r_extrap > max_r: # if we extrapolate outside what our prior tells us is a reasonable set of r, just use the max values
-    print("Extrapolated value of r is outside of range, using max values")
-    final_eta = eta_max
-    final_t = t_max
-else:
-    final_eta, final_t = decompose_r(int(r_extrap), int(r_extrap)+1, valid_etas, valid_ts, 1, rtol, n_retries=1000)
-    final_eta = final_eta[0]
-    final_t = final_t[0] # Assuming decompose_r returns lists
+    sigma = compute_sigma([final_t], [eps_f])[0]
+    config = {'lr': final_eta, 't': final_t, 'sigma': sigma}
+    final_r, final_acc = launch_config([config], eps_f)
 
-sigma = compute_sigma([final_t], [eps_f])[0]
-config = {'lr': final_eta, 't': final_t, 'sigma': sigma}
-final_r, final_acc = launch_config([config], eps_f)
+    # Final print statements
+    print("Final accuracy: {}".format(final_acc))
+    print(f"All searched etas: {', '.join([f'{eta:.5f}' for eta in searched_etas])}")
+    print(f"All searched ts: {searched_ts}")
+    print(f"All searched sigmas: {', '.join([f'{sigma:.2f}' for sigma in searched_sigmas])}")
+    print(f"All searched accs: {searched_accs}")
+    # compute mus for hyperparameter search
+    mus = []
+    for t, sigma in zip(searched_ts, searched_sigmas):
+        mu = np.sqrt(t)/sigma
+        mus.append(mu)
 
-# Final print statements
-print("Final accuracy: {}".format(final_acc))
-print(f"All searched etas: {', '.join([f'{eta:.2f}' for eta in searched_etas])}")
-print(f"All searched ts: {searched_ts}")
-print(f"All searched sigmas: {', '.join([f'{sigma:.2f}' for sigma in searched_sigmas])}")
-print(f"All searched accs: {searched_accs}")
-# compute mus for hyperparameter search
-mus = []
-for t, sigma in zip(searched_ts, searched_sigmas):
-    mu = np.sqrt(t)/sigma
-    mus.append(mu)
+    # compute total mu
+    mu = np.sqrt(sum([mu**2 for mu in mus]))
 
-# compute total mu
-mu = np.sqrt(sum([mu**2 for mu in mus]))
+    mech = GaussianMechanism(1) 
+    # override mu 
+    mech.mu = mu
 
-mech = GaussianMechanism(1) 
-# override mu 
-mech.mu = mu
+    _, eps, _ = PRVAccountant(mech, max_self_compositions=1, eps_error=eps_err, # this computes a lower bound for eps, estimate and upper bound, and we use the estimate, you can change this to use the upper bound if you want 
+                                    delta_error=1e-12).compute_epsilon(args.delta, 1)
 
-_, eps, _ = PRVAccountant(mech, max_self_compositions=1, eps_error=eps_err, # this computes a lower bound for eps, estimate and upper bound, and we use the estimate, you can change this to use the upper bound if you want 
-                                  delta_error=1e-12).compute_epsilon(args.delta, 1)
-
-print(f"Total privacy cost for final accuracy including the privacy cost of hyperparameter search {eps:.3f}")
-assert eps < 1.0, "Privacy cost for hyperparameter search is too high! You've done something wrong."
+    print(f"Total privacy cost for final accuracy including the privacy cost of hyperparameter search {eps:.3f}")
+    assert eps < 1.0, "Privacy cost for hyperparameter search is too high! You've done something wrong."

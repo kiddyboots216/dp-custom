@@ -62,28 +62,19 @@ def get_classifier(model_dict):
     this is a catastrophe
     """
 
-    def handle_dp(args, key, val):
-        if args.disable_dp:
-            return val
-        else:
-            # return val._module
-            return val
-
     def handle_average(args, key, val):
         if key in ["ema", "swa"]:
             return val.module
         else:
             return val
 
-    def handle_augmult(args, key, val):
-        if args.augmult > -1:
-            return val[1]
-        else:
-            return val
-
+    def handle_dataparallel(args, key, val):
+        # return val.module 
+        return val
+    
     for key, val in model_dict.items():
-        model_dict[key] = handle_augmult(
-            args, key, handle_dp(args, key, handle_average(args, key, val))
+        model_dict[key] = handle_dataparallel(
+            args, key, handle_average(args, key, val)
         )
     return model_dict
 

@@ -15,7 +15,8 @@ eps_err = 0.001 # error tolerance for computing sigma; you can make this larger 
 eta_max = 1 * DATASET_TO_SIZE[args.dataset] / 50000 # original linear scaling rule; we've arbitrarily chosen the dataset size for CIFAR as the reference. For ImageNet this will set eta_max to ~25. Note that this assumes full-batch.
 t_max = 150 # feel free to expand this as large as you like if you have the resources, we didn't want to wait too long for the experiment to finish
 n_runs = 10 # number of runs for each hyperparameter setting, you can increase this if you want
-valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05))) # granularity of the grid is directly tied to rtol so if you make this less granular you will need to increase rtol
+# valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05))) # granularity of the grid is directly tied to rtol so if you make this less granular you will need to increase rtol
+valid_etas = np.power(10, np.arange(-5, 2, 0.15))
 valid_ts = np.arange(5, t_max, 5) # similar comment as above
 
 # Main code logic
@@ -76,7 +77,7 @@ configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts
 _, _ = launch_config(configs, eps_1)
 
 # Final print statements
-print(f"All searched etas: {', '.join([f'{eta:.2f}' for eta in searched_etas])}")
+print(f"All searched etas: {', '.join([f'{eta:.5f}' for eta in searched_etas])}")
 print(f"All searched ts: {searched_ts}")
 print(f"All searched sigmas: {', '.join([f'{sigma:.2f}' for sigma in searched_sigmas])}")
 print(f"All searched accs: {searched_accs}")
