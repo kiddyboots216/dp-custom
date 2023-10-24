@@ -28,7 +28,6 @@ python finetune_classifier_dp.py\
     --dataset ImageNet\
     --arch vit_base_patch16 \
     --workers 8\
-    --sigma 10.53\
     --lr ${1}\
     --epsilon ${2}\
     --epochs ${3}\
@@ -38,5 +37,6 @@ python finetune_classifier_dp.py\
     --max_phys_bsz 160146 \
     --feature_norm ${7}\
     --feature_mod ${8}\
+    --sigma ${9}\
 
 # --max_phys_bsz 160146\

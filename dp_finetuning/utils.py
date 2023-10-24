@@ -75,7 +75,7 @@ ARCH_TO_NUM_FEATURES = {
     "resnet20": 1024,
     "vit_base_patch16": {"": 768 * 12,
                          "fixed": 768 * 12 * 7,
-                         "avgpool": 768 * 12 * 4},
+                         "avgpool": 768 * 12 * 4}
 }
 ARCH_TO_INTERP_SIZE = {
     "beitv2_large_patch16_224_in22k": 224,
@@ -610,7 +610,8 @@ def load_pretrained_vit(args):
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), num_classes=1000,
         num_layers=12,)
-    finetune_path = "path/to/vit/checkpoint" # replace this with your path
+    # finetune_path = "path/to/vit/checkpoint" # replace this with your path
+    finetune_path = "ckpt-vip-syn-base.pth"
     checkpoint = torch.load(finetune_path, map_location='cpu')
     print("Load pre-trained checkpoint from: %s" % finetune_path)
     checkpoint_model = checkpoint['model']
@@ -751,27 +752,14 @@ def get_ds(args):
             model = model.cuda()
             IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
             IMAGENET_STD = np.array([0.229, 0.224, 0.225])
-            from util.crop import RandomResizedCrop
-            transform_train = transforms.Compose([
-                RandomResizedCrop(224, interpolation=3),
-                transforms.RandomHorizontalFlip(),
-                # transforms.Resize(256, interpolation=3),
-                # transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)])
-            transform_val = transforms.Compose([
+            transform = transforms.Compose([
                     transforms.Resize(256, interpolation=3),
                     transforms.CenterCrop(224),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)])      
-            # transform_train = transform_val # TODO figure this out
             dataset_path = args.dataset_path + args.dataset
             # train_path = dataset_path + "/train"
             # train_ds = datasets.ImageFolder(train_path, transform=transform_train)
-            transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-            ])
             train_ds = datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization", split="train", transform=transform)
             batch_extract_size = 1024
             train_loader = DataLoader(train_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=True)
@@ -855,8 +843,9 @@ def get_ds(args):
         
             return translated_features
 
+        train_noise_std = 4.0
         if args.feature_norm != 0:  # Adjusted condition to cater for -1 as a valid input
-            features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm, noise_std=4.0) # this noise is already calibrated for eps guarantee
+            features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm, noise_std=train_noise_std) # this noise is already calibrated for eps guarantee
             features_test = preprocess_features_tensor(features_test, desired_norm=args.feature_norm, noise_std=0.0) # no noise for test set
 
         ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)

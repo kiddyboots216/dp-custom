@@ -2,7 +2,8 @@
 
 lrs=(10)
 epsilons=(7.9)
-epochs=(250)
+sigma=(9.43) # not an array
+epochs=(200)
 bszs=(-1)
 # bszs=(320292 640584)
 optimizers=("sgd")
@@ -29,7 +30,7 @@ for lr in "${lrs[@]}"; do
                 # Print the current configuration
                 echo "Submitting with lr=$lr, epsilon=$epsilon, epochs=$epoch, batch_size=$bsz, optimizer=$opt, sched=$sch, fn=$fn, fm=$fm"
                 # Submit the job
-                sbatch imagenet.sh $lr $epsilon $epoch $bsz $opt $sch $fn $fm
+                sbatch imagenet.sh $lr $epsilon $epoch $bsz $opt $sch $fn $fm $sigma
               done
             done
           done
