@@ -5,7 +5,12 @@ from collections import defaultdict
 import timm
 import torch
 import numpy as np
+from functools import partial
+
+import torch
 import torch.nn as nn
+
+import timm.models.vision_transformer
 import torch.nn.functional as F
 
 from torchvision import datasets, transforms
@@ -114,7 +119,7 @@ def parse_args():
     parser.add_argument("--lr", default=1, type=float)
     parser.add_argument("--epochs", default=110, type=int)
     parser.add_argument("--batch_size", default=-1, type=int)
-    parser.add_argument("--sigma", default=37.80, type=float, help="The default sigma is for epsilon=1.0, passing sigma=0.0 will disable privacy, and sigma=-1 will calculate sigma from epsilon")
+    parser.add_argument("--sigma", default=-1, type=float, help="You can pass sigma=37.80 for epsilon=1.0, passing sigma=0.0 will disable privacy, and sigma=-1 will calculate sigma from epsilon")
     parser.add_argument(
         "--max_per_sample_grad_norm",
         default=1,
@@ -400,23 +405,7 @@ def get_features(f, images, interp_size=224, batch=64):
             features.append(f(img).detach().cpu())
     return torch.cat(features)
 
-def extract_features_from_model(model, dl, args, max_count=10**9):
-    feat, labels = [], []
-    count = 0
-    for img, label in tqdm(dl):
-        with torch.autocast(device_type='cuda', dtype=torch.float16):
-            # out = model(img.cuda())
-            if args.feature_mod == "avgpool":
-                feat.append(model.forward_features_avgpool(img.cuda()).detach().cpu().float())
-            elif args.feature_mod == "fixed":
-                feat.append(model.forward_features_dense(img.cuda()).detach().cpu().float())
-            else:
-                feat.append(model.forward_features(img.cuda()).detach().cpu().float())
-        labels.append(label)
-        count += len(img)
-        if count >= max_count:
-            break
-    return torch.cat(feat), torch.cat(labels)
+
 
 def download_things(args):
     dataset_path = args.dataset_path
@@ -536,160 +525,92 @@ class timmFe(nn.Module):
             x = (x - self.mean) / self.std
         return self.net(x)
 
-# # def get_standardized_weight(weight,out_channels,eps,gain, scale):
-# #     weight = F.batch_norm(
-# #             weight.reshape(1, out_channels, -1), None, None,
-# #             weight=(gain * scale).view(-1),
-# #             training=True, momentum=0., eps=eps).reshape_as(weight)
-# #     return weight
+# --------------------------------------------------------
+# Interpolate position embeddings for high-resolution
+# References:
+# DeiT: https://github.com/facebookresearch/deit
+# --------------------------------------------------------
+def interpolate_pos_embed(model, checkpoint_model):
+    if 'pos_embed' in checkpoint_model:
+        pos_embed_checkpoint = checkpoint_model['pos_embed']
+        embedding_size = pos_embed_checkpoint.shape[-1]
+        num_patches = model.patch_embed.num_patches
+        num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+        # height (== width) for the checkpoint position embedding
+        orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+        # height (== width) for the new position embedding
+        new_size = int(num_patches ** 0.5)
+        # class_token and dist_token are kept unchanged
+        if orig_size != new_size:
+            print("Position interpolate from %dx%d to %dx%d" % (orig_size, orig_size, new_size, new_size))
+            extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+            # only the position tokens are interpolated
+            pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+            pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+            pos_tokens = torch.nn.functional.interpolate(
+                pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+            pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
+            new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+            checkpoint_model['pos_embed'] = new_pos_embed
 
-# import numpy as np
-# import timm
-# from typing import List, Tuple, Dict, Any, Optional
-# from timm.layers.padding import get_padding,  get_padding_value, pad_same
-# from timm.layers.std_conv import ScaledStdConv2d, ScaledStdConv2dSame
-# from timm.models.layers import make_divisible, DropPath
-# from timm.models.nfnet import DownsampleAvg, NormFreeBlock
-# from opacus.grad_sample import register_grad_sampler
+class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
+    def __init__(self, num_layers=12, **kwargs):
+        super(VisionTransformer, self).__init__(**kwargs)
 
-# def get_standardized_weight(weight, out_channels, eps, gain, scale):
-#     original_shape = weight.shape
-#     weight = weight.reshape(1, out_channels, -1)
-    
-#     # calculate mean and variance
-#     mean = weight.mean(dim=2, keepdim=True)
-#     var = weight.var(dim=2, keepdim=True)
+        self.num_layers = num_layers
+        self.fc_norm = kwargs['norm_layer'](kwargs['embed_dim'])
+        del self.norm
 
-#     # standardize the weights (Batch normalization without running averages)
-#     weight = (weight - mean) / torch.sqrt(var + eps)
+    def forward(self, x):
+        B = x.shape[0]
+        x = self.patch_embed(x)
 
-#     # reshape weights to their original shape
-#     weight = weight.reshape(original_shape)
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
 
-#     # apply channel-wise scaling (equivalent to the 'weight' parameter in batch normalization)
-#     weight = weight * gain * scale
-    
-#     return weight
+        feature_list = []
+        idx_block = 0
+
+        for blk in self.blocks:
+            x = blk(x)
+            idx_block += 1
+            if idx_block > (len(self.blocks) - self.num_layers):
+                x_no_cls = x[:, 1:, ...]
+                
+                # Check the dimensionality of x_no_cls
+                if len(x_no_cls.shape) == 3:  # shape is [B, T, F]
+                    # Calculate the stride for pooling so that the output T dimension is approximately 4.
+                    stride = max(1, x_no_cls.shape[1] // 4)
+                    pooled_output = F.avg_pool1d(x_no_cls.permute(0, 2, 1), kernel_size=stride, stride=stride).permute(0, 2, 1)
+                elif len(x_no_cls.shape) == 4:  # shape is [B, T1, T2, F]
+                    # Calculate the stride for pooling so that the output T1 and T2 dimensions are approximately 4.
+                    stride = max(1, x_no_cls.shape[2] // 4)
+                    pooled_output = F.avg_pool2d(x_no_cls, kernel_size=(stride, stride), stride=stride)
+                else:
+                    raise ValueError(f"Unexpected tensor shape: {x_no_cls.shape}")
+
+                # Flatten the pooled output across the time dimension
+                flattened_output = pooled_output.reshape(pooled_output.size(0), -1)
+                
+                feature_list.append(flattened_output)
 
 
+        outcome = torch.cat(feature_list, 1)
 
-# # def get_standardized_weight(weight, gain=None, eps=1e-4):
-# #     # Get Scaled WS weight OIHW;
-# #     fan_in = np.prod(weight.shape[-3:])
-# #     mean = torch.mean(weight, axis=[-3, -2, -1], keepdims=True)
-# #     var = torch.var(weight, axis=[-3, -2, -1], keepdims=True)
-# #     weight = (weight - mean) / (var * fan_in + eps) ** 0.5
-# #     if gain is not None:
-# #         weight = weight * gain
-# #     return weight
+        return outcome
 
-# class MyScaledStdConv2d(nn.Conv2d):
-#     """Conv2d with Weight Standardization. Used for BiT ResNet-V2 models.
+    def forward_head(self, x, pre_logits: bool = False):
+        return x if pre_logits else self.head(x)
 
-#     Paper: `Micro-Batch Training with Batch-Channel Normalization and Weight Standardization` -
-#         https://arxiv.org/abs/1903.10520v2
-#     """
-#     def __init__(
-#             self, in_channels, out_channels, kernel_size, stride=1, padding=None,
-#             dilation=1, groups=1, bias=True, gamma=1.0, eps=1e-6, gain_init=1.0):
-#         if padding is None:
-#             padding = get_padding(kernel_size, stride, dilation)
-#         super().__init__(
-#             in_channels, out_channels, kernel_size, stride=stride, padding=padding, dilation=dilation,
-#             groups=groups, bias=bias)
-#         self.gain = nn.Parameter(torch.full((self.out_channels, 1, 1, 1), gain_init))
-#         self.scale = gamma * self.weight[0].numel() ** -0.5  # gamma * 1 / sqrt(fan-in)
-#         self.eps = eps
-        
-#     def forward(self, x):
-#         # std_weight = get_standardized_weight(self.weight, gain=self.gain, eps=self.eps)
-#         std_weight = get_standardized_weight(self.weight, self.out_channels, self.eps, self.gain, self.scale)
-#         return F.conv2d(x, std_weight, self.bias,self.stride, self.padding, self.dilation, self.groups)
 
-# def replace_layers(model):
-#     for name, module in reversed(list(model._modules.items())):
-#         if len(list(module.children())) > 0:
-#             model._modules[name] = replace_layers(module)
-#         if isinstance(module, ScaledStdConv2d):
-#             # create a MyScaledStdConv2d with the same parameters
-#             # copy all the weights over
-#             in_channels = module.in_channels
-#             out_channels = module.out_channels
-#             kernel_size = module.kernel_size
-#             stride = module.stride
-#             padding = module.padding
-#             dilation = module.dilation
-#             groups = module.groups
-#             bias = module.bias is not None
-
-#             new_module = MyScaledStdConv2d(
-#                 in_channels, out_channels, kernel_size, stride=stride, padding=padding, 
-#                 dilation=dilation, groups=groups, bias=bias
-#             )
-
-#             # Copy weights and biases
-#             new_module.weight.data.copy_(model._modules[name].weight.data)
-#             if module.bias is not None:
-#                 new_module.bias.data.copy_(model._modules[name].bias.data)
-#             # copy over the 'gain' parameter
-#             new_module.gain.data.copy_(model._modules[name].gain.data)
-#             # copy over the 'eps' parameter
-#             new_module.eps = model._modules[name].eps
-#             # copy over the 'scale' parameter
-#             new_module.scale = model._modules[name].scale
-#             model._modules[name] = new_module
-
-#     return model 
-
-# # def load_wrn(args):
-# #     from wrn import WideResNet 
-# #     model = WideResNet(16, 256, 4)
-
-# def load_nfnet(args):
-#     # load the nfnet50 model from timm
-#     model = timm.create_model('nf_resnet50', num_classes=0)
-#     pretrained_path = 'checkpoint_0120.pth.tar'
-#     encoder_checkpoint = os.path.join(shaders_path, pretrained_path)
-
-#     # Load the checkpoint
-#     print(f"Loading from: {encoder_checkpoint}")
-#     ckpt = torch.load(encoder_checkpoint, map_location='cpu')
-
-#     # rename moco_training pre-trained keys
-#     state_dict = ckpt['state_dict']
-#     for k in list(state_dict.keys()):
-#         # retain only encoder_q up to before the embedding layer
-#         if k.startswith('module.encoder_q') and not k.startswith('module.encoder_q.fc'):
-#             # remove prefix
-#             state_dict[k[len("module.encoder_q."):]] = state_dict[k]
-#         # delete renamed or unused k
-#         del state_dict[k]
-
-#     # load the timm model with the checkpoint
-#     msg = model.load_state_dict(state_dict, strict=False)
-#     # assert set(msg.missing_keys) == {"fc.weight", "fc.bias"}, msg.missing_keys
-#     model = replace_layers(model)
-#     # remove the fc layer because we are just extracting features
-#     # model = torch.nn.Sequential(*(list(model.children())[:-1]))
-#     model.eval()
-
-#     for param in model.parameters():
-#         param.requires_grad = False
-
-#     return model
-
-def load_pretrained_vit(args):
-    import util.misc as misc
-    from util.pos_embed import interpolate_pos_embed
-    
-    global_pool = True
-    import models_vit
-    model = models_vit.__dict__[args.arch](
-        num_classes=1000,
-        global_pool=global_pool,
-        lp_num_layers=12,
-    )
-    finetune_path = "path/to/vit/checkpoint"
+def load_pretrained_vit(args):    
+    model = VisionTransformer(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), num_classes=1000,
+        num_layers=12,)
+    finetune_path = "path/to/vit/checkpoint" # replace this with your path
     checkpoint = torch.load(finetune_path, map_location='cpu')
     print("Load pre-trained checkpoint from: %s" % finetune_path)
     checkpoint_model = checkpoint['model']
@@ -706,12 +627,68 @@ def load_pretrained_vit(args):
     msg = model.load_state_dict(checkpoint_model, strict=False)
     print(msg)
 
-    if global_pool:
-        assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
-    else:
-        assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
+    assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
 
     return model
+
+def extract_features_from_vit(model, dl, args, extracted_train_path, labels_train_path, max_count=10**9):
+    # Initialize variables
+    chunk_size = 100000
+    current_count = 0
+    chunk_idx = 0
+
+    # Initialize empty tensors to store the current chunk
+    feat_chunk = torch.Tensor().cpu()
+    labels_chunk = torch.Tensor().cpu()
+
+    for img, label in tqdm(dl):
+        img = img.cuda()  # Move data to CUDA device
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            model_out = model(img).detach().cpu().float()  # Use wrapped model for DataParallel
+
+        # Concatenate the new data to the existing chunk
+        feat_chunk = torch.cat((feat_chunk, model_out), dim=0)
+        labels_chunk = torch.cat((labels_chunk, label.cpu().float()), dim=0)
+
+        current_count += len(img)
+
+        # Check if the current chunk has reached the chunk_size
+        if feat_chunk.shape[0] >= chunk_size:
+            print(f"Saving chunk {chunk_idx}")
+            torch.save(feat_chunk, f"{extracted_train_path}_chunk_{chunk_idx}.pt")
+            torch.save(labels_chunk, f"{labels_train_path}_chunk_{chunk_idx}.pt")
+
+            # Reset the chunks
+            feat_chunk = torch.Tensor().cpu()
+            labels_chunk = torch.Tensor().cpu()
+            chunk_idx += 1  # Increment chunk index
+
+        if current_count >= max_count:
+            break
+    # Save the last chunk
+    if feat_chunk.shape[0] > 0:
+        print(f"Saving chunk {chunk_idx}")
+        torch.save(feat_chunk, f"{extracted_train_path}_chunk_{chunk_idx}.pt")
+        torch.save(labels_chunk, f"{labels_train_path}_chunk_{chunk_idx}.pt")
+
+import glob
+
+def check_features_extracted(path_pattern):
+    return len(glob.glob(path_pattern)) > 0
+
+def load_feature_chunks(path_pattern, dtype=torch.float32):
+    chunks = []
+    for chunk_file in sorted(glob.glob(path_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0])):
+        chunk = torch.load(chunk_file).to(dtype=dtype)  # Cast to the desired dtype if needed
+        chunks.append(chunk)
+    return torch.cat(chunks, dim=0)
+
+def load_label_chunks(path_pattern, dtype=torch.long):
+    chunks = []
+    for chunk_file in sorted(glob.glob(path_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0])):
+        chunk = torch.load(chunk_file).to(dtype=dtype)  # Cast to the desired dtype if needed
+        chunks.append(chunk)
+    return torch.cat(chunks, dim=0)
 
 def get_ds(args):
     dataset_path = args.dataset_path
@@ -735,8 +712,6 @@ def get_ds(args):
         )
     if args.dataset in ["ImageNet"]:
         # A LOT OF THE CODE IN THIS BLOCK IS FOR A DIFFERENT SUBMISSION, WE APOLOGIZE FOR THE UNTIDINESS
-        # most models finally require squared images, so h and w are equal
-        # assert ARCH_TO_INTERP_SIZE[args.arch] == fe.h, f"Interpolation size {ARCH_TO_INTERP_SIZE[args.arch]} is not equal to {fe.h} h of the model"
         def get_feature_path(base_path, feature_mod, default_suffix=".npy"):
             if feature_mod:
                 return base_path.replace(default_suffix, f"{feature_mod}.npy")
@@ -749,13 +724,17 @@ def get_ds(args):
         labels_test_path = extracted_path + "/_test_labels.npy"
 
         # Handle overwriting logic
-        if args.overwrite:
-            print(f"Overwriting existing feature file for {extracted_train_path}...")
-            if not args.feature_mod:  # If no custom modification is provided, use 'tmp' as default
-                extracted_train_path = get_feature_path(extracted_train_path, "_tmp")
-                extracted_test_path = get_feature_path(extracted_test_path, "_tmp")
+        # if args.overwrite:
+        #     print(f"Overwriting existing feature file for {extracted_train_path}...")
+        #     if not args.feature_mod:  # If no custom modification is provided, use 'tmp' as default
+        #         extracted_train_path = get_feature_path(extracted_train_path, "_tmp")
+        #         extracted_test_path = get_feature_path(extracted_test_path, "_tmp")
         
-        if os.path.exists(extracted_train_path) and not args.overwrite:
+        # if os.path.exists(extracted_train_path) and not args.overwrite:
+        #     print(f"Features already extracted for {extracted_train_path}, skipping...")
+        # else:
+        #     print(f"Extracting features to {extracted_train_path}...")
+        if check_features_extracted(f"{extracted_train_path}_chunk_*.pt") and not args.overwrite:
             print(f"Features already extracted for {extracted_train_path}, skipping...")
         else:
             print(f"Extracting features to {extracted_train_path}...")
@@ -767,6 +746,8 @@ def get_ds(args):
             elif "resnet" in args.arch:
                 model = create_model_from_pretrained(args)
             model.eval()
+            # we have 2 gpus so let's use DataParallel
+            model = nn.DataParallel(model)
             model = model.cuda()
             IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
             IMAGENET_STD = np.array([0.229, 0.224, 0.225])
@@ -783,24 +764,52 @@ def get_ds(args):
                     transforms.CenterCrop(224),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)])      
-            transform_train = transform_val # just testing
+            # transform_train = transform_val # TODO figure this out
             dataset_path = args.dataset_path + args.dataset
-            train_path = dataset_path + "/train"
-            train_ds = datasets.ImageFolder(train_path, transform=transform_train)
+            # train_path = dataset_path + "/train"
+            # train_ds = datasets.ImageFolder(train_path, transform=transform_train)
+            transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+            ])
+            train_ds = datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization", split="train", transform=transform)
             batch_extract_size = 1024
-            train_loader = DataLoader(train_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=False)
-            features_train, labels_train = extract_features_from_model(model, train_loader, args)
+            train_loader = DataLoader(train_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=True)
+            # features_train, labels_train = extract_features_from_vit(model, train_loader, args, max_count=10**9)
+            # print("finished extracting features")
+            # os.makedirs(extracted_path, exist_ok=True)
+            # # np.save(extracted_train_path, features_train)
+            # # np.save(labels_train_path, labels_train)
+            # chunk_size = 100000  # Number of samples per chunk
+            # num_chunks = len(features_train) // chunk_size
+
+            # for i in range(num_chunks):
+            #     start_idx = i * chunk_size
+            #     end_idx = (i + 1) * chunk_size
+            #     np.save(f"{extracted_train_path}_chunk_{i}.npy", features_train[start_idx:end_idx])
+
+            # print("Extracted features from train set")
             os.makedirs(extracted_path, exist_ok=True)
-            np.save(extracted_train_path, features_train)
-            np.save(labels_train_path, labels_train)
-            print("Extracted features from train set")
-            test_path = dataset_path + "/val"
-            test_ds = datasets.ImageFolder(test_path, transform=transform_val)
-            test_loader = DataLoader(test_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=False)
-            features_test, labels_test = extract_features_from_model(model, test_loader, args)
-            np.save(extracted_test_path, features_test)
-            np.save(labels_test_path, labels_test)
-            print("Extracted features from test set")
+            # Actual extraction
+            extract_features_from_vit(model, train_loader, args, extracted_train_path, labels_train_path, max_count=10**9)
+
+            # test_path = dataset_path + "/val"
+            # test_ds = datasets.ImageFolder(test_path, transform=transform_val)
+            test_ds = datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization", split="val", transform=transform)
+            test_loader = DataLoader(test_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=True)
+            # features_test, labels_test = extract_features_from_vit(model, test_loader, args, max_count=10**9)
+            extract_features_from_vit(model, test_loader, args, extracted_test_path, labels_test_path, max_count=10**9)
+            # np.save(extracted_test_path, features_test)
+            # np.save(labels_test_path, labels_test)
+            # chunk_size = 100000  # Number of samples per chunk
+            # num_chunks = len(features_test) // chunk_size
+
+            # for i in range(num_chunks):
+            #     start_idx = i * chunk_size
+            #     end_idx = (i + 1) * chunk_size
+            #     np.save(f"{extracted_test_path}_chunk_{i}.npy", features_test[start_idx:end_idx])
+
+            # print("Extracted features from test set")
         # features_train = torch.load(extracted_train_path)
         # features_test = torch.load(extracted_test_path)
         # labels_train = torch.load(labels_train_path)
@@ -809,51 +818,46 @@ def get_ds(args):
         #     extracted_train_path = extracted_train_path.replace(".npy", "tmp.npy")
         #     extracted_test_path = extracted_test_path.replace(".npy", "tmp.npy")
         #     print("Using overwritten features from disk")
+        # Load features
         print("Loading features from disk")
-        features_train = torch.from_numpy(np.load(extracted_train_path))
-        features_test = torch.from_numpy(np.load(extracted_test_path))
+        features_train = load_feature_chunks(f"{extracted_train_path}_chunk_*.pt")
+        features_test = load_feature_chunks(f"{extracted_test_path}_chunk_*.pt")
 
+        # Load labels
         print("Loading labels from disk")
-        labels_train = torch.from_numpy(np.load(labels_train_path))
-        labels_test = torch.from_numpy(np.load(labels_test_path))
-
-        # def preprocess_features_tensor(features_tensor, desired_norm=args.feature_norm):
-        #     split_tensors = torch.split(features_tensor, 768, dim=1)  # Split into 12 chunks of 768 dims each
-            
-        #     normalized_splits = []
-        #     for tensor_chunk in split_tensors:
-        #         norms = torch.norm(tensor_chunk, dim=1, keepdim=True)
-                
-        #         # If desired_norm is -1, normalize to the mean norm of the chunk
-        #         target_norm = norms.mean() if desired_norm == -1 else desired_norm
-        #         normalized_chunk = (tensor_chunk / norms) * target_norm
-                
-        #         mean_vector = torch.mean(normalized_chunk, dim=0)
-        #         translated_chunk = normalized_chunk - mean_vector
-                
-        #         normalized_splits.append(translated_chunk)
-            
-        #     # Concatenate all the normalized chunks back together
-        #     return torch.cat(normalized_splits, dim=1)
+        labels_train = load_label_chunks(f"{labels_train_path}_chunk_*.pt")
+        labels_test = load_label_chunks(f"{labels_test_path}_chunk_*.pt")
         
-        # def preprocess_features_tensor(features_tensor, desired_norm=args.feature_norm):
-        #     # Normalize feature vectors
-        #     norms = torch.norm(features_tensor, dim=1, keepdim=True)
-        #     target_norm = norms.mean() if desired_norm == -1 else desired_norm
-        #     normalized_features = (features_tensor / norms) * target_norm
+        def preprocess_features_tensor(features_tensor, desired_norm=args.feature_norm, noise_std=0.0):
+            """
+            features_tensor: Tensor of shape [N, D] where N is the number of samples and D is the dimensionality of the features
+            desired_norm: The desired norm of the features. If -1, the mean norm of the features will be used.
+            noise_std: The standard deviation of the noise to add to the mean vector. If 0, no noise will be added.
+            """
+            # Normalize feature vectors
+            norms = torch.norm(features_tensor, dim=1, keepdim=True)
+            target_norm = norms.mean() if desired_norm == -1 else desired_norm
+            normalized_features = (features_tensor / norms) * target_norm
             
-        #     # Compute the mean of the normalized features
-        #     mean_vector = torch.mean(normalized_features, dim=0)
-            
-        #     # Subtract the mean from the normalized features
-        #     translated_features = normalized_features - mean_vector
-            
-        #     return translated_features
+            # Compute the mean of the normalized features
+            mean_vector = torch.mean(normalized_features, dim=0)
 
-        # if args.feature_norm != 0:  # Adjusted condition to cater for -1 as a valid input
-        #     features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm)
-        #     features_test = preprocess_features_tensor(features_test, desired_norm=args.feature_norm)
+            # Compute the sensitivity of the mean
+            sensitivity = target_norm / features_tensor.shape[0]
 
+            # Add noise proportional to the sensitivity
+            noise_std *= sensitivity
+            noise = torch.normal(mean=0, std=noise_std, size=mean_vector.shape, dtype=mean_vector.dtype, device=mean_vector.device)
+            mean_vector += noise
+
+            # Subtract the mean from the normalized features
+            translated_features = normalized_features - mean_vector
+        
+            return translated_features
+
+        if args.feature_norm != 0:  # Adjusted condition to cater for -1 as a valid input
+            features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm, noise_std=4.0) # this noise is already calibrated for eps guarantee
+            features_test = preprocess_features_tensor(features_test, desired_norm=args.feature_norm, noise_std=0.0) # no noise for test set
 
         ds_train = dataset_with_indices(TensorDataset)(features_train, labels_train)
         ds_test = TensorDataset(features_test, labels_test)
