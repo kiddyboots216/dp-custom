@@ -12,13 +12,13 @@ args = parse_args()
 # CONSTANTS FOR HYPERPARAMETER SEARCH
 # epsilon values - if you're asking why these sum up to greater than one it's because we are not using basic composition (we are using Corollary 3.3 from "Gaussian Differential Privacy" by Dong et al.)
 # you will probably want to adjust these for your task, these are just some reasonable values for the current experiment
-eps_1 = 0.01
-eps_2 = 0.1
-eps_f = 0.97 
-# here are some other acceptable values that you can try out to see what happens when we give more privacy budget to the initial runs
-# eps_1 = 0.05
+# eps_1 = 0.01
 # eps_2 = 0.1
-# eps_f = 0.96 
+# eps_f = 0.97 
+# here are some other acceptable values that you can try out to see what happens when we give more privacy budget to the initial runs
+eps_1 = 0.05
+eps_2 = 0.1
+eps_f = 0.96 
 # and some more
 # eps_1 = 0.05
 # eps_2 = 0.2
@@ -27,7 +27,7 @@ eps_err = 0.001 # error tolerance for computing sigma; you can make this larger 
 n_runs = 3 # number of runs for each hyperparameter setting, you can increase this if you want
 rtol = 0.05 # tolerance when sampling r
 # valid_etas = np.array([0.01] + list(np.arange(0.05, eta_max, 0.05))) # granularity of the grid is directly tied to rtol so if you make this less granular you will need to increase rtol
-valid_etas = np.power(10, np.arange(-5, 2, 0.15))
+valid_etas = np.power(10, np.arange(-5, 0, 0.15))
 t_max = 150 # feel free to expand this as large as you like if you have the resources, we didn't want to wait too long for the experiment to finish
 t_min = 5 # minimum value of t, you can increase this if you want
 valid_ts = np.arange(t_min, t_max, 5) # similar comment as above
@@ -112,26 +112,26 @@ searched_accs = []
 
 if __name__ == "__main__":
     # First hyperparameter search
-    # etas, ts = decompose_r(min_r, int(max_r//10), valid_etas, valid_ts, n_runs, rtol)
+    etas, ts = decompose_r(min_r, int(max_r//10), valid_etas, valid_ts, n_runs, rtol)
     # etas, ts = rand_eta_t(valid_etas, valid_ts, n_runs)
-    # sigmas = compute_sigma(ts, [eps_1] * n_runs)
+    sigmas = compute_sigma(ts, [eps_1] * n_runs)
     # etas = valid_etas 
     # ts = [1] * len(etas)
     # sigmas = [255.7393275537945] * len(etas)
-    # configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
-    # r_1, _ = launch_config(configs, eps_1)
-    r_1 = 0.0012589254117941816
+    configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
+    r_1, _ = launch_config(configs, eps_1)
+    # r_1 = 0.0012589254117941816
 
     # Second hyperparameter search
-    # etas, ts = decompose_r(r_1, int(max_r//5), valid_etas, valid_ts, n_runs, rtol)
-    n_runs = 11
-    eps_2 = 0.05
+    etas, ts = decompose_r(r_1, int(max_r//5), valid_etas, valid_ts, n_runs, rtol)
+    # n_runs = 11
+    # eps_2 = 0.05
     # etas = np.random.choice(valid_etas[14:], n_runs)
     # ts = np.random.choice(valid_ts[1:], n_runs)
-    # sigmas = compute_sigma(ts, [eps_2] * n_runs)
-    # configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
-    # r_2, _ = launch_config(configs, eps_2)
-    r_2 = 12.31296626212616
+    sigmas = compute_sigma(ts, [eps_2] * n_runs)
+    configs = [{'lr': eta, 't': t, 'sigma': sigma} for eta, t, sigma in zip(etas, ts, sigmas)]
+    r_2, _ = launch_config(configs, eps_2)
+    # r_2 = 12.31296626212616
     # now compute linear interpolation 
     xs = [eps_1, eps_2]
     ys = [r_1, r_2]
