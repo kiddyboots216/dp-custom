@@ -1,11 +1,13 @@
 import os
 import argparse
 from collections import defaultdict
+import glob
 
 import timm
 import torch
 import numpy as np
 from functools import partial
+from torch.utils.data import Subset
 
 import torch
 import torch.nn as nn
@@ -65,7 +67,7 @@ ARCH_TO_NUM_FEATURES = {
     "beit_large_patch16_512": 1024,
     "convnext_xlarge_384_in22ft1k": 2048,
     "vit_large_patch16_384": 1024,
-    "vit_gigantic_patch14_clip_224.laion2b": 1664,
+    "vit_gigantic_patch14_clip_224.laion2b": {"none": 1664},
     "vit_giant_patch14_224_clip_laion2b": 1408,
     "stylegan-resnet50-bn": 2048,
     "shaders-resnet50-bn": 2048,
@@ -75,7 +77,8 @@ ARCH_TO_NUM_FEATURES = {
     "resnet20": 1024,
     "vit_base_patch16": {"": 768 * 12,
                          "fixed": 768 * 12 * 7,
-                         "avgpool": 768 * 12 * 4}
+                         "avgpool": 768 * 12 * 4},
+    "eva02_large_patch14_448.mim_m38m_ft_in22k": {"base": 98304},
 }
 ARCH_TO_INTERP_SIZE = {
     "beitv2_large_patch16_224_in22k": 224,
@@ -94,6 +97,7 @@ ARCH_TO_INTERP_SIZE = {
     'stylegan-wideresnet16': 224,
     "vit_base_patch16": 224,
     "resnet20": 224,
+    "eva02_large_patch14_448.mim_m38m_ft_in22k": 448,
 }
 
 def parse_args():
@@ -167,6 +171,12 @@ def parse_args():
         help="Target feature norm (default: 1)",
     )
     parser.add_argument(
+        "--zo_eps",
+        type=float,
+        default=1e-3,
+        help="Zo eps",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=11297,
@@ -186,6 +196,21 @@ def parse_args():
         "--momentum",
         type=float,
         default=0.9,
+    )
+    parser.add_argument(
+        "--start_idx",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--end_idx",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--label_smoothing",
+        type=float,
+        default=0.0,
     )
     parser.add_argument(
         "--sample_rate",
@@ -221,11 +246,12 @@ def parse_args():
         help="Store gradients for each epoch",
     )
     parser.add_argument(
-        "--store_weights",
+        "--save_weights",
         action="store_true",
         default=False,
         help="Store only the final weights",
     )
+    parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument(
         "--max_phys_bsz",
         type=int,
@@ -249,7 +275,7 @@ def parse_args():
     parser.add_argument(
         "--feature_mod",
         type=str,
-        default="",
+        default="none",
         help="If specified with --overwrite, overwritten features will be written to this path. Otherwise, features will be loaded from the path ending with feature_mod, e.g., train{feature_mod}.npy"
     )
     parser.add_argument(
@@ -259,17 +285,8 @@ def parse_args():
         choices=["fastDP", "opacus"],
         help="what privacy engine to use"
     )
-    # parser.add_argument(
-    #     "--weight_avg_mode",
-    #     choices=[
-    #         "none",
-    #         "ema",
-    #         "swa",
-    #         "best",
-    #     ],
-    #     default="best",
-    #     help="What kind of weight averaging to use",
-    # )
+    parser.add_argument("--list_lr", default="[1]", type=parse_list)
+
     args = parser.parse_args()
     if args.batch_size == -1:
         args.batch_size = DATASET_TO_SIZE[args.dataset]
@@ -282,6 +299,8 @@ def parse_args():
         from prv_accountant.dpsgd import find_noise_multiplier
 
         sampling_probability = args.batch_size / DATASET_TO_SIZE[args.dataset]
+        if args.end_idx == 625:
+            sampling_probability *= 2
         args.sigma = find_noise_multiplier(
             sampling_probability=sampling_probability,
             num_steps=int(args.epochs / sampling_probability),
@@ -293,6 +312,11 @@ def parse_args():
     for arg in vars(args):
         print(" {} {}".format(arg, getattr(args, arg) or ""))
     return args
+# In your argument parsing script (utils.py)
+import ast
+
+def parse_list(arg):
+    return ast.literal_eval(arg)
 import torchvision
 def create_resnet20_from_pretrained(args):
     model = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar100_resnet20", pretrained=True)
@@ -611,6 +635,7 @@ def load_pretrained_vit(args):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), num_classes=1000,
         num_layers=12,)
     finetune_path = "path/to/vit/checkpoint" # replace this with your path
+    finetune_path = "ckpt-vip-syn-base.pth"
     checkpoint = torch.load(finetune_path, map_location='cpu')
     print("Load pre-trained checkpoint from: %s" % finetune_path)
     checkpoint_model = checkpoint['model']
@@ -631,11 +656,81 @@ def load_pretrained_vit(args):
 
     return model
 
+def load_custom_eva(args):
+
+    class CustomModelWrapper:
+        def __init__(self, base_model, num_layers=12):
+            self.base_model = base_model
+            self.num_layers = num_layers
+
+        def forward_features(self, x):
+            x = self.base_model.patch_embed(x)
+            # Use the _pos_embed function from the base model to get position embeddings and rotary position embeddings
+            x, rot_pos_embed = self.base_model._pos_embed(x)
+
+            feature_list = []
+
+            for blk in self.base_model.blocks:
+                x = blk(x, rope=rot_pos_embed)
+                x_no_cls = x[:, 1:, ...]  # Assuming the cls token is the first token as usual
+
+                if len(x_no_cls.shape) == 3:
+                    stride = max(1, x_no_cls.shape[1] // 4)
+                    pooled_output = F.avg_pool1d(x_no_cls.permute(0, 2, 1), kernel_size=stride, stride=stride).permute(0, 2, 1)
+                elif len(x_no_cls.shape) == 4:
+                    stride = max(1, x_no_cls.shape[2] // 4)
+                    pooled_output = F.avg_pool2d(x_no_cls, kernel_size=(stride, stride), stride=stride)
+                else:
+                    raise ValueError(f"Unexpected tensor shape: {x_no_cls.shape}")
+
+                flattened_output = pooled_output.reshape(pooled_output.size(0), -1)
+                feature_list.append(flattened_output)
+
+            outcome = torch.cat(feature_list, 1)
+            return outcome
+
+    base_model = timm.create_model(
+        'eva02_large_patch14_448.mim_m38m_ft_in22k',
+        pretrained=True,
+        num_classes=0,  # remove classifier nn.Linear
+    )
+    base_model = base_model.eval().cuda()
+
+    # Wrap the base model in your custom class
+    model = CustomModelWrapper(base_model)
+    data_config = timm.data.resolve_model_data_config(base_model)
+    transform = timm.data.create_transform(**data_config, is_training=False)
+    return model, transform
+
+def load_custom_vit(args):
+    base_model = timm.create_model(
+        args.arch,
+        pretrained=True,
+        num_classes=0,  # remove classifier nn.Linear
+    )
+    base_model = base_model.eval().cuda()
+
+    data_config = timm.data.resolve_model_data_config(base_model)
+    transform = timm.data.create_transform(**data_config, is_training=False)
+    return base_model, transform
+
 def extract_features_from_vit(model, dl, args, extracted_train_path, labels_train_path, max_count=10**9):
-    # Initialize variables
-    chunk_size = 100000
+    chunk_size = 1024
     current_count = 0
+
+    existing_chunks = glob.glob(f"{extracted_train_path}_chunk_*.pt")
     chunk_idx = 0
+    already_processed = 0
+
+    if existing_chunks:
+        last_saved_chunk = max(existing_chunks, key=os.path.getctime)
+        chunk_idx = int(last_saved_chunk.split("_chunk_")[-1].split('.pt')[0]) + 1
+        already_processed = chunk_idx * chunk_size
+        print(f"Found {len(existing_chunks)} existing chunks. Starting from chunk {chunk_idx}")
+        # Create a subset of the dataset starting from the already_processed index
+        subset_dataset = Subset(dl.dataset, range(already_processed, len(dl.dataset)))
+        subset_dataloader = torch.utils.data.DataLoader(subset_dataset, batch_size=dl.batch_size, shuffle=False, num_workers=dl.num_workers)
+        dl = subset_dataloader
 
     # Initialize empty tensors to store the current chunk
     feat_chunk = torch.Tensor().cpu()
@@ -644,7 +739,7 @@ def extract_features_from_vit(model, dl, args, extracted_train_path, labels_trai
     for img, label in tqdm(dl):
         img = img.cuda()  # Move data to CUDA device
         with torch.autocast(device_type='cuda', dtype=torch.float16):
-            model_out = model(img).detach().cpu().float()  # Use wrapped model for DataParallel
+            model_out = model.forward_features(img).detach().cpu().float()  # Use wrapped model for DataParallel
 
         # Concatenate the new data to the existing chunk
         feat_chunk = torch.cat((feat_chunk, model_out), dim=0)
@@ -665,30 +760,85 @@ def extract_features_from_vit(model, dl, args, extracted_train_path, labels_trai
 
         if current_count >= max_count:
             break
+
     # Save the last chunk
     if feat_chunk.shape[0] > 0:
         print(f"Saving chunk {chunk_idx}")
         torch.save(feat_chunk, f"{extracted_train_path}_chunk_{chunk_idx}.pt")
         torch.save(labels_chunk, f"{labels_train_path}_chunk_{chunk_idx}.pt")
 
-import glob
+def check_features_extracted(base_path):
+    print(f"Checking if features exist at {base_path}")
+    # Check for chunk files
+    chunk_files_exist = len(glob.glob(f"{base_path}_chunk_*.pt")) > 0
+    if chunk_files_exist:
+        return True
 
-def check_features_extracted(path_pattern):
-    return len(glob.glob(path_pattern)) > 0
+    # Check for a single file
+    single_file_exist = os.path.isfile(base_path)
+    return single_file_exist
 
-def load_feature_chunks(path_pattern, dtype=torch.float32):
+def load_chunk(chunk_file, dtype):
+    try:
+        chunk = torch.load(chunk_file).to(dtype=dtype)
+        return chunk
+    except Exception as e:
+        print(f"Error loading {chunk_file}: {e}")
+        return None
+def load_chunks(path_pattern, dtype, start_idx, end_idx, total_chunks, seed=None, is_training=False):
+    chunk_files = sorted(glob.glob(path_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0]))
+
+    if is_training and seed is not None:
+        np.random.seed(seed)
+        # Generate random indices for the total number of chunks
+        all_indices = np.random.permutation(total_chunks)
+        # Select the indices for the current subset
+        selected_indices = all_indices[start_idx:end_idx]
+        # Filter chunk_files based on the selected indices
+        chunk_files = [chunk_files[i] for i in selected_indices]
+
     chunks = []
-    for chunk_file in sorted(glob.glob(path_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0])):
-        chunk = torch.load(chunk_file).to(dtype=dtype)  # Cast to the desired dtype if needed
-        chunks.append(chunk)
-    return torch.cat(chunks, dim=0)
+    for chunk_file in tqdm(chunk_files, desc="Loading Chunks"):
+        try:
+            chunk = torch.load(chunk_file).to(dtype=dtype)
+            chunks.append(chunk)
+        except Exception as e:
+            print(f"Error loading {chunk_file}: {e}")
 
-def load_label_chunks(path_pattern, dtype=torch.long):
-    chunks = []
-    for chunk_file in sorted(glob.glob(path_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0])):
-        chunk = torch.load(chunk_file).to(dtype=dtype)  # Cast to the desired dtype if needed
-        chunks.append(chunk)
-    return torch.cat(chunks, dim=0)
+    return torch.cat(chunks, dim=0) if chunks else torch.Tensor()
+# from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# def load_chunks(feature_pattern, label_pattern, dtype, start_idx, end_idx, total_chunks, seed=None, is_training=False, max_workers=1):
+#     feature_files = sorted(glob.glob(feature_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0]))
+#     label_files = sorted(glob.glob(label_pattern), key=lambda x: int(x.split("_chunk_")[-1].split('.pt')[0]))
+
+#     if is_training and seed is not None:
+#         np.random.seed(seed)
+#         all_indices = np.random.permutation(total_chunks)
+#         selected_indices = all_indices[start_idx:end_idx]
+#         feature_files = [feature_files[i] for i in selected_indices]
+#         label_files = [label_files[i] for i in selected_indices]
+
+#     features = []
+#     labels = []
+#     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+#         future_to_feature_chunk = {executor.submit(load_chunk, chunk_file, dtype): chunk_file for chunk_file in feature_files}
+#         future_to_label_chunk = {executor.submit(load_chunk, chunk_file, torch.long): chunk_file for chunk_file in label_files}
+        
+#         for future in as_completed(future_to_feature_chunk):
+#             feature_chunk = future.result()
+#             if feature_chunk is not None:
+#                 features.append(feature_chunk)
+                
+#         for future in as_completed(future_to_label_chunk):
+#             label_chunk = future.result()
+#             if label_chunk is not None:
+#                 labels.append(label_chunk)
+
+#     if features and labels:
+#         return torch.cat(features, dim=0), torch.cat(labels, dim=0)
+#     else:
+#         return torch.Tensor(), torch.Tensor()
 
 def get_ds(args):
     dataset_path = args.dataset_path
@@ -703,7 +853,6 @@ def get_ds(args):
     extracted_test_path = extracted_path + "/_test.npy"
     labels_train_path = extracted_path + "/_train_labels.npy"
     labels_test_path = extracted_path + "/_test_labels.npy"
-    # fe = timmFe(args.arch).cuda() # timm models based feature extractor
     
     kwargs = {"num_workers": args.workers, "pin_memory": True}
     if not os.path.exists(dataset_path):
@@ -711,9 +860,8 @@ def get_ds(args):
             "We cannot download a dataset/model here \n Run python utils.py to download things"
         )
     if args.dataset in ["ImageNet"]:
-        # A LOT OF THE CODE IN THIS BLOCK IS FOR A DIFFERENT SUBMISSION, WE APOLOGIZE FOR THE UNTIDINESS
         def get_feature_path(base_path, feature_mod, default_suffix=".npy"):
-            if feature_mod:
+            if feature_mod != "none":
                 return base_path.replace(default_suffix, f"{feature_mod}.npy")
             return base_path
 
@@ -723,126 +871,115 @@ def get_ds(args):
         extracted_test_path = get_feature_path(extracted_path + "/_test.npy", args.feature_mod)
         labels_test_path = extracted_path + "/_test_labels.npy"
 
-        # Handle overwriting logic
-        # if args.overwrite:
-        #     print(f"Overwriting existing feature file for {extracted_train_path}...")
-        #     if not args.feature_mod:  # If no custom modification is provided, use 'tmp' as default
-        #         extracted_train_path = get_feature_path(extracted_train_path, "_tmp")
-        #         extracted_test_path = get_feature_path(extracted_test_path, "_tmp")
-        
-        # if os.path.exists(extracted_train_path) and not args.overwrite:
-        #     print(f"Features already extracted for {extracted_train_path}, skipping...")
-        # else:
-        #     print(f"Extracting features to {extracted_train_path}...")
-        if check_features_extracted(f"{extracted_train_path}_chunk_*.pt") and not args.overwrite:
+        if check_features_extracted(extracted_train_path) and not args.overwrite:
+        # if False:
             print(f"Features already extracted for {extracted_train_path}, skipping...")
         else:
             print(f"Extracting features to {extracted_train_path}...")
-            if "vit" in args.arch:
-                model = load_pretrained_vit(args) 
-            elif "nfnet" in args.arch:
-                # model = timm.create_model(args.arch, pretrained=True, num_classes=0)
-                model = load_nfnet(args)
+            if "eva" in args.arch:
+                model, transform = load_custom_eva(args)
+            elif "vit" in args.arch:
+                model, transform = load_custom_vit(args)
+                # below code is for dprandp
+                # model = load_pretrained_vit(args) 
+                # IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
+                # IMAGENET_STD = np.array([0.229, 0.224, 0.225])
+                # transform = transforms.Compose([
+                #         transforms.Resize(256, interpolation=3),
+                #         transforms.CenterCrop(224),
+                #         transforms.ToTensor(),
+                #         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)])     
             elif "resnet" in args.arch:
                 model = create_model_from_pretrained(args)
-            model.eval()
+            # model.eval()
             # we have 2 gpus so let's use DataParallel
-            model = nn.DataParallel(model)
-            model = model.cuda()
-            IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
-            IMAGENET_STD = np.array([0.229, 0.224, 0.225])
-            transform = transforms.Compose([
-                    transforms.Resize(256, interpolation=3),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)])      
+            # model = nn.DataParallel(model)
+            # model = model.cuda()
+             
             dataset_path = args.dataset_path + args.dataset
+            
             # train_path = dataset_path + "/train"
             # train_ds = datasets.ImageFolder(train_path, transform=transform_train)
             train_ds = datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization", split="train", transform=transform)
-            batch_extract_size = 1024
+            batch_extract_size = 32
             train_loader = DataLoader(train_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=True)
-            # features_train, labels_train = extract_features_from_vit(model, train_loader, args, max_count=10**9)
-            # print("finished extracting features")
-            # os.makedirs(extracted_path, exist_ok=True)
-            # # np.save(extracted_train_path, features_train)
-            # # np.save(labels_train_path, labels_train)
-            # chunk_size = 100000  # Number of samples per chunk
-            # num_chunks = len(features_train) // chunk_size
-
-            # for i in range(num_chunks):
-            #     start_idx = i * chunk_size
-            #     end_idx = (i + 1) * chunk_size
-            #     np.save(f"{extracted_train_path}_chunk_{i}.npy", features_train[start_idx:end_idx])
-
-            # print("Extracted features from train set")
             os.makedirs(extracted_path, exist_ok=True)
             # Actual extraction
-            extract_features_from_vit(model, train_loader, args, extracted_train_path, labels_train_path, max_count=10**9)
+            max_count_num = 10**9
+            extract_features_from_vit(model, train_loader, args, extracted_train_path, labels_train_path, max_count=max_count_num)
 
             # test_path = dataset_path + "/val"
             # test_ds = datasets.ImageFolder(test_path, transform=transform_val)
             test_ds = datasets.ImageNet(root="/scratch/gpfs/DATASETS/imagenet/ilsvrc_2012_classification_localization", split="val", transform=transform)
             test_loader = DataLoader(test_ds, batch_size=batch_extract_size, shuffle=False, num_workers=args.workers, pin_memory=True)
             # features_test, labels_test = extract_features_from_vit(model, test_loader, args, max_count=10**9)
-            extract_features_from_vit(model, test_loader, args, extracted_test_path, labels_test_path, max_count=10**9)
-            # np.save(extracted_test_path, features_test)
-            # np.save(labels_test_path, labels_test)
-            # chunk_size = 100000  # Number of samples per chunk
-            # num_chunks = len(features_test) // chunk_size
-
-            # for i in range(num_chunks):
-            #     start_idx = i * chunk_size
-            #     end_idx = (i + 1) * chunk_size
-            #     np.save(f"{extracted_test_path}_chunk_{i}.npy", features_test[start_idx:end_idx])
-
-            # print("Extracted features from test set")
-        # features_train = torch.load(extracted_train_path)
-        # features_test = torch.load(extracted_test_path)
-        # labels_train = torch.load(labels_train_path)
-        # labels_test = torch.load(labels_test_path)
-        # if True:
-        #     extracted_train_path = extracted_train_path.replace(".npy", "tmp.npy")
-        #     extracted_test_path = extracted_test_path.replace(".npy", "tmp.npy")
-        #     print("Using overwritten features from disk")
-        # Load features
+            extract_features_from_vit(model, test_loader, args, extracted_test_path, labels_test_path, max_count=max_count_num)
         print("Loading features from disk")
-        features_train = load_feature_chunks(f"{extracted_train_path}_chunk_*.pt")
-        features_test = load_feature_chunks(f"{extracted_test_path}_chunk_*.pt")
 
-        # Load labels
-        print("Loading labels from disk")
-        labels_train = load_label_chunks(f"{labels_train_path}_chunk_*.pt")
-        labels_test = load_label_chunks(f"{labels_test_path}_chunk_*.pt")
+        # Define the range of chunks to load
+        start_idx = args.start_idx  # Replace with your actual start index
+        end_idx = args.end_idx  # Replace with your actual end index
+        seed = args.seed
+        features_dtype = torch.float16  # or torch.float32 based on your preference
+        total_chunks = 1251
+        # Load feature and label chunks
+        # features_train, labels_train = load_chunks(extracted_train_path + "_chunk_*.pt",
+        #                                         labels_train_path + "_chunk_*.pt",
+        #                                         features_dtype, start_idx, end_idx,
+        #                                         total_chunks, seed=seed, is_training=True, max_workers=args.workers)
+
+        # features_test, labels_test = load_chunks(extracted_test_path + "_chunk_*.pt",
+        #                                         labels_test_path + "_chunk_*.pt",
+        #                                         features_dtype, 0, 49, 49, max_workers=args.workers)
+        # # Load feature chunks
         
-        def preprocess_features_tensor(features_tensor, desired_norm=args.feature_norm, noise_std=0.0):
-            """
-            features_tensor: Tensor of shape [N, D] where N is the number of samples and D is the dimensionality of the features
-            desired_norm: The desired norm of the features. If -1, the mean norm of the features will be used.
-            noise_std: The standard deviation of the noise to add to the mean vector. If 0, no noise will be added.
-            """
-            # Normalize feature vectors
-            norms = torch.norm(features_tensor, dim=1, keepdim=True)
-            target_norm = norms.mean() if desired_norm == -1 else desired_norm
-            normalized_features = (features_tensor / norms) * target_norm
+        features_train = load_chunks(extracted_train_path + "_chunk_*.pt", features_dtype, start_idx, end_idx, 1252, seed=args.seed, is_training=True)
+        features_test = load_chunks(extracted_test_path + "_chunk_*.pt", features_dtype, 0, 49, 49)
+        # # Load label chunks
+        labels_dtype = torch.long
+        labels_train = load_chunks(labels_train_path + "_chunk_*.pt", labels_dtype, start_idx, end_idx, 1252, seed=args.seed, is_training=True)
+        labels_test = load_chunks(labels_test_path + "_chunk_*.pt", labels_dtype, 0, 49, 49)
+        
+        def preprocess_features_tensor(features_tensor, desired_norm, noise_std=0.0, chunk_size=10000):
+            num_samples, num_features = features_tensor.shape
+            num_chunks = (num_samples + chunk_size - 1) // chunk_size  # Compute the number of chunks
             
-            # Compute the mean of the normalized features
-            mean_vector = torch.mean(normalized_features, dim=0)
+            normalized_features_list = []
+            mean_features_list = []
+            
+            # First pass: Compute mean and normalize the features
+            for i in tqdm(range(num_chunks), desc="Processing Chunks"):
+                start_idx = i * chunk_size
+                end_idx = min(start_idx + chunk_size, num_samples)
+                
+                # Process each chunk
+                chunk = features_tensor[start_idx:end_idx].float()  # Convert only this chunk to float32
+                chunk_norms = torch.norm(chunk, dim=1, keepdim=True)  # Compute norms of each vector in the chunk
+                
+                # Normalize the chunk: each vector in the chunk is scaled to have the norm 'desired_norm'
+                normalized_chunk = (chunk / chunk_norms * desired_norm)
+                mean_features_list.append(normalized_chunk.mean(dim=0))  # Normalize and convert back to fp16 immediately
+                normalized_features_list.append(normalized_chunk.half())
+                  # Compute the mean of the chunk
 
-            # Compute the sensitivity of the mean
-            sensitivity = target_norm / features_tensor.shape[0]
+            # # Compute the overall mean in fp16
+            mean_feature_vector = torch.mean(torch.stack(mean_features_list), dim=0)
 
-            # Add noise proportional to the sensitivity
-            noise_std *= sensitivity
-            noise = torch.normal(mean=0, std=noise_std, size=mean_vector.shape, dtype=mean_vector.dtype, device=mean_vector.device)
-            mean_vector += noise
+            # # Add noise to the mean vector in fp16
+            # noise = torch.normal(mean=0, std=noise_std, size=mean_feature_vector.shape, device=mean_feature_vector.device).half()
+            # noisy_mean_vector = mean_feature_vector + noise
 
-            # Subtract the mean from the normalized features
-            translated_features = normalized_features - mean_vector
-        
-            return translated_features
+            # # Second pass: Subtract the noisy mean from the normalized features
+            for i, normalized_chunk in enumerate(normalized_features_list):
+                normalized_chunk = normalized_chunk.float() - mean_feature_vector  # Subtract the noisy mean
+                normalized_features_list[i] = normalized_chunk.half()
 
-        train_noise_std = 4.0
+            # Concatenate all normalized chunks
+            normalized_features = torch.cat(normalized_features_list, dim=0)
+            
+            return normalized_features
+
+        train_noise_std = 0.0
         if args.feature_norm != 0:  # Adjusted condition to cater for -1 as a valid input
             features_train = preprocess_features_tensor(features_train, desired_norm=args.feature_norm, noise_std=train_noise_std) # this noise is already calibrated for eps guarantee
             features_test = preprocess_features_tensor(features_test, desired_norm=args.feature_norm, noise_std=0.0) # no noise for test set
